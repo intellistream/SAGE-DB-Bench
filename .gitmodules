@@ -14,3 +14,6 @@
 	path = IP-DiskANN
 	url = https://github.com/intellistream/IP-DiskANN.git
 	branch = main
+[submodule "DynaGraph"]
+	path = DynaGraph
+	url = https://github.com/intellistream/DynaGraph
