@@ -158,6 +158,72 @@ class Sift10MDataset(Dataset):
         return "sift10M"
 
 
+class Sift100MDataset(Dataset):
+    """SIFT100M base vectors in uint8 xbin format."""
+
+    def __init__(self):
+        super().__init__()
+        self.nb = 100000000
+        self.nq = 10000
+        self.d = 128
+        self.dtype = "uint8"
+        self.basedir = "raw_data/sift100M/"
+
+    def prepare(self, skip_data: bool = False):
+        os.makedirs(self.basedir, exist_ok=True)
+
+    def get_dataset_fn(self):
+        candidates = [
+            os.path.join(self.basedir, "data_100000000_128"),
+            os.path.join(self.basedir, "base.u8bin"),
+        ]
+        for fn in candidates:
+            if os.path.exists(fn):
+                return fn
+        return candidates[0]
+
+    def get_dataset(self):
+        return xbin_mmap(self.get_dataset_fn(), dtype=self.dtype)
+
+    def get_dataset_iterator(self, bs: int = 512, split: Tuple[int, int] = (1, 0)):
+        data = xbin_mmap(self.get_dataset_fn(), dtype=self.dtype)
+        for i in range(0, len(data), bs):
+            yield data[i : i + bs]
+
+    @staticmethod
+    def _infer_xbin_dtype(fn):
+        with open(fn, "rb") as f:
+            n, d = np.fromfile(f, dtype=np.uint32, count=2)
+        payload_bytes = os.path.getsize(fn) - 2 * np.dtype(np.uint32).itemsize
+        itemsize = payload_bytes // (int(n) * int(d))
+        if itemsize == np.dtype(np.uint8).itemsize:
+            return "uint8"
+        if itemsize == np.dtype(np.float32).itemsize:
+            return "float32"
+        raise ValueError(f"Cannot infer xbin dtype for {fn}: itemsize={itemsize}")
+
+    def get_queries(self):
+        candidates = [
+            os.path.join(self.basedir, "query.u8bin"),
+            os.path.join(self.basedir, "queries.u8bin"),
+            os.path.join(self.basedir, "queries_10000_128"),
+            os.path.join("raw_data/sift/", "queries_10000_128"),
+        ]
+        for fn in candidates:
+            if os.path.exists(fn):
+                return xbin_mmap(fn, dtype=self._infer_xbin_dtype(fn), maxn=self.nq)
+        return xbin_mmap(candidates[0], dtype="uint8", maxn=self.nq)
+
+    def get_groundtruth(self, k: Optional[int] = None):
+        return None
+
+    def distance(self):
+        return "euclidean"
+
+    def short_name(self):
+        return "sift100M"
+
+
 class OpenImagesDataset(Dataset):
     """Open Images dataset"""
 
@@ -273,8 +339,8 @@ class CocoDataset(Dataset):
 
     def __init__(self):
         super().__init__()
-        self.nb = 117266
-        self.nq = 5000
+        self.nb = 100000
+        self.nq = 500
         self.d = 768
         self.basedir = "raw_data/coco/"
 
@@ -610,6 +676,7 @@ DATASETS = {
     "sift-small": SiftSmallDataset,
     "sift": SiftDataset,
     "sift10M": Sift10MDataset,
+    "sift100M": Sift100MDataset,
     # Image datasets
     "openimages": OpenImagesDataset,
     "sun": SunDataset,

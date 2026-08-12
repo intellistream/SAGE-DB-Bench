@@ -3,7 +3,7 @@ This section first formulates the problem in Section~2.1 and then presents key o
 
 \subsection{Problem Statement}
 
-We begin with the standard Approximate Nearest Neighbor Search (ANNS) definition and then extend it to the dynamic setting considered in this paper.
+We begin with the standard Approximate Nearest Neighbor Search (ANNS) definition \cite{Song2025}.
 
 \begin{table}[t]
   \caption{Summary of terminologies}
@@ -14,8 +14,8 @@ We begin with the standard Approximate Nearest Neighbor Search (ANNS) definition
     \midrule
     $\mathcal{D}$ & Vector dataset. \\
     $\mathcal{D}_r$ & Vector dataset state after applying the batch updates at round $r$. \\
-    $\widehat{N}_k(q)$ & Approximate top-$k$ result set of query $q$. \\
-    $N_k^{\ast}(q)$ & Exact top-$k$ nearest-neighbor set of query $q$. \\
+    % $\widehat{N}_k(q)$ & Approximate top-$k$ result set of query $q$. \\
+    % $N_k^{\ast}(q)$ & Exact top-$k$ nearest-neighbor set of query $q$. \\
     $\mathrm{Recall@}k(q)$ & Recall of the approximate top-$k$ result for query $q$. \\
     $\mathcal{U}_r$ & Batch updates at round $r$. \\
     $\mathcal{Q}_r$ & Batch queries executed at round $r$. \\
@@ -31,18 +31,18 @@ We begin with the standard Approximate Nearest Neighbor Search (ANNS) definition
 \begin{figure*}
 	\centering
 	\subfloat[Top-$k$ overlap across rounds]{
-		\includegraphics[width=0.5\columnwidth]{figures/figure2a.png}
+		\includegraphics[width=0.57\columnwidth]{figures/repeat_topk_compare.pdf}
 		\label{fig:repeat results}
 	}\hspace{0.02\linewidth}
-    \subfloat[Skewness of returned vector IDs]{
-		\includegraphics[width=0.5\columnwidth]{figures/figure2b.png}
+    \subfloat[Skewness of retrieved vector IDs]{
+		\includegraphics[width=0.57\columnwidth]{figures/rank_frequency.pdf}
 		\label{fig:skewness}
 	}\hspace{0.02\linewidth}
   \subfloat[Per-query top-$k$ overlap]{
-    \includegraphics[width=0.62\columnwidth]{figures/figure2c.png}
+    \includegraphics[width=0.7\columnwidth]{figures/query_overlap_set_desc_batch4_vs_batch5.pdf}
     \label{fig:per-query difference}
   }
-    \caption{Key observations in dynamic ANNS workloads.}
+    \caption{Key observations in dynamic ANNS workloads (HNSW, \texttt{SIFT}).}
 	\label{fig:observation}
 \end{figure*}
 
@@ -53,13 +53,12 @@ Given a vector dataset $\mathcal{D}\subset\mathbb{R}^d$, a query $q\in\mathbb{R}
 \mathrm{Recall@}k(q)=\frac{|\widehat{N}_k(q)\cap N_k^{\ast}(q)|}{k}.
 \end{equation}
 
-Definition 1 captures the static setting, where the dataset and index remain fixed during queries. 
-In practical systems, however, vectors are continuously inserted and deleted, causing the ANNS index to evolve over time. 
+Definition 1 captures the static setting, where the index remains fixed during queries. 
+In the real world, however, vectors are continuously inserted, causing the ANNS index to evolve over time. 
 To model this setting, we adopt the \textit{serialized round-based execution} model used in CANDOR-Bench~\cite{Wang202627}.
 
 \noindent\textbf{Definition 2 (Dynamic ANNS).}
-Dynamic ANNS operates as a sequence of update-query rounds. At each round $r$, the system first applies a batch of updates $\mathcal{U}_r$ (insertions/deletions) 
-to transform the previous dataset $\mathcal{D}_{r-1}$ into $\mathcal{D}_r$, and then executes a batch of queries $\mathcal{Q}_r$ on $\mathcal{D}_r$. The index structure is updated online across rounds.
+Dynamic ANNS operates as a sequence of update-query rounds. At each round $r$, the system first applies a batch of updates $\mathcal{U}_r$ to transform the previous dataset $\mathcal{D}_{r-1}$ into $\mathcal{D}_r$, and then executes a batch of queries $\mathcal{Q}_r$ on $\mathcal{D}_r$. The index structure is updated online across rounds.
 
 In this setting, many optimizations developed for static ANNS become less effective as updates accumulate. As their effectiveness decays, query throughput drops and recall may also deteriorate. Frequent re-optimization is not a viable
 solution either, because its maintenance overhead can dominate end-to-end cost, as shown in Figure~\ref{fig:reopt-cost}. This dilemma motivates the following problem.
@@ -97,7 +96,7 @@ Accordingly, the optimization objective is to maximize $\mathrm{QPS}(R)$ subject
 \ge
 \tau \cdot \overline{\mathrm{Recall@}k}^{\mathrm{baseline}}.
 \end{equation}
-where $\overline{\mathrm{Recall@}k}$ is the average recall over all queries in the $R$ rounds, and $\tau \in (0,1]$ specifies the required recall ratio relative to the baseline.
+where $\overline{\mathrm{Recall@}k}$ is the average recall over all queries in the $R$ rounds, and $\tau \in (0,1]$ specifies the required recall ratio relative to the baseline. We set $\tau=0.98$ in our experiments. More workloads may be evaluated in the future.
 
 % \begin{equation}
 % \begin{aligned}
@@ -122,11 +121,11 @@ where $\overline{\mathrm{Recall@}k}$ is the average recall over all queries in t
 
 \subsection{Key Observations}
 
-To better understand the behavior of dynamic ANNS workloads, we conduct a preliminary study and summarize three observations.
+We perform a preliminary study of dynamic ANNS workloads using HNSW as a case study and summarize three observations.
 
 \noindent\textbf{Observation 1: Recent search outcomes often remain informative across consecutive rounds.} For the same query batch, the top-$k$ results often remain highly overlapping across consecutive update rounds. 
 As shown in Figure~\ref{fig:repeat results}, the 
-overlap ratio of top-$k$ results quickly exceeds 80\% after the first few batches and remains around 95\% thereafter. This result suggests that although accumulated updates may gradually reduce the effectiveness of acceleration techniques, they do not immediately cause large 
+overlap ratio of top-$k$ results quickly exceeds 80\% after the first few batches and remains around 95\% thereafter. This result suggests that the applied updates do not immediately cause large 
 changes in the query results. Therefore, recent high-quality search results can still provide useful guidance for later queries, even though they should not be blindly returned as final answers.
 
 
@@ -138,7 +137,7 @@ This skew suggests that historical search results are not equally useful: priori
 %As shown in Figure~\ref{fig:skewness}, the frequency of hit node IDs follows a clear long-tail distribution: a small fraction of IDs is found very frequently, while the majority is rarely observed. This skew indicates that query-hit patterns in dynamic ANNS are highly uneven, and that not all recurring search outcomes are equally valuable for reuse. As a result, treating historical outcomes discriminately is likely to be cost-effective.
 
 \noindent\textbf{Observation 3: Result stability varies across queries.}
-Within a query batch, different queries can respond very differently to updates. As shown in Figure~\ref{fig:per-query difference}, we observe that roughly 50\% of queries keep
+Within a query batch, different queries can respond very differently to updates. Figure~\ref{fig:per-query difference} shows that roughly 45\% of queries keep
 their top-$k$ results unchanged before and after batch updates, while nearly 10\% of queries experience at least 50\% changes in their top-$k$ results. This variation suggests that historical results cannot be assumed to be reliable for all queries, even when the overall batch-level overlap remains high.
 
 
@@ -165,14 +164,14 @@ It must also support bounded retention and eviction, so that outdated or low-val
 \noindent\textbf{Challenge 2: How to guide new queries with stored results?}
 Stored historical results are useful only if they can be matched to later queries and used to reduce search cost.
 This is straightforward when a query repeats a previous one, but harder when the query is only similar to past queries.
-The system must therefore decide which stored results are relevant to the current query and how they can guide the search process.
-Observation 2 further shows that returned vector frequencies are highly skewed, suggesting that stored results should not be treated uniformly during retrieval and reuse.
+The system must therefore decide which stored results are relevant to the current query and how they can guide the current search.
+Observation 2 further shows that returned vector frequencies are highly skewed, approximately following a Zipf distribution with an exponent of 1.167, indicating that stored results should not be treated uniformly during retrieval and reuse.
 
 %Even when historical outcomes are stored, turning them into effective search guidance remains non-trivial. The system must activate relevant outcomes for queries that do not exactly match previous ones, and use them to recover strong candidates without causing excessive search expansion. Moreover, Observation 2 suggests that reuse should be selective rather than uniform: highly recurring outcomes and long-tail outcomes may need to be handled differently in order to achieve good performance under bounded cost. But, how to design such a selective reuse mechanism that can adapt to changing query-hit patterns is an open question.
 
 \noindent\textbf{Challenge 3: How to validate the new results derived from stored results?}
 Even if historical search results can be retrieved for a new query, the results derived from them may not be reliable after updates.
-Observation 3 shows that result stability varies significantly across queries, so blindly trusting stored results may lead to low-quality generated results.
+Observation 3 shows that result stability varies significantly across queries, so blindly trusting stored results can lead to degraded search quality, with recall deviations of up to 0.81\%.
 The system must decide whether to accept the generated top-$k$ results or fall back to the original search path.
 This validation step must be lightweight; otherwise, its cost can offset the benefit of reusing stored results.
 

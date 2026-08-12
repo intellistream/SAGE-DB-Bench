@@ -5,35 +5,13 @@ glove:
   2:
     operation: "initial"
     start: 0
-    end: 500000
+    end: 10000
   3:
     operation: "batch_insert"
-    start: 500000
-    end: 1192514
-    batchSize: 10000
-    eventRate: 10000
-  4:
-    operation: "waitPending"
-  5:
-    operation: "search"
-  6:
-    operation: "endHPC"
-  gt_url: "none"
-
-coco:
-  max_pts: 100000
-  1:
-    operation: "startHPC"
-  2:
-    operation: "initial"
-    start: 0
-    end: 50000
-  3:
-    operation: "batch_insert"
-    start: 50000
-    end: 100000
-    batchSize: 10000
-    eventRate: 10000
+    start: 100000
+    end: 110000
+    batchSize: 2500
+    eventRate: 2500
   4:
     operation: "waitPending"
   5:
@@ -74,10 +52,10 @@ msong:
     end: 500000
   3:
     operation: "batch_insert"
-    start: 500000
-    end: 992272
-    batchSize: 10000
-    eventRate: 10000
+    start: 200000
+    end: 300000
+    batchSize: 2500
+    eventRate: 2500
   4:
     operation: "waitPending"
   5:
@@ -100,28 +78,13 @@ sift:
     end: 1000000
     batchSize: 10000
     eventRate: 10000
-  4:
-    operation: "waitPending"
-  5:
-    operation: "search"
-  6:
-    operation: "endHPC"
-  gt_url: "none"
-
-sift10M:
-  max_pts: 10000000
-  1:
-    operation: "startHPC"
-  2:
-    operation: "initial"
-    start: 0
-    end: 5000000
-  3:
-    operation: "batch_insert"
-    start: 5000000
-    end: 10000000
-    batchSize: 100000
-    eventRate: 100000
+    continuousQuery: true
+    queryFile: /root/ghr/CANDOR-Bench/raw_data/sift/queries_30000_128
+    queryPoolSize: 30000
+    querySampleSize: 500
+    querySampleSeed: 42
+    querySampleMode: per_batch
+    # per_batch: 每个 batch 独立采样；fixed: 每个 batch 使用同一批 query；non_repeating: 跨 batch 全局无重复
   4:
     operation: "waitPending"
   5:
@@ -137,13 +100,13 @@ sift100M:
   2:
     operation: "initial"
     start: 0
-    end: 10000000 
+    end: 500000
   3:
     operation: "batch_insert"
-    start: 10000000
-    end: 50000000
-    batchSize: 100000
-    eventRate: 100000
+    start: 500000
+    end: 10000000
+    batchSize: 2500
+    eventRate: 10000
   4:
     operation: "waitPending"
   5:

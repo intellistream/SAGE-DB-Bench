@@ -2,7 +2,7 @@
 Implementing \system requires instantiating the parameters that govern the efficiency-recall trade-off under dynamic updates.
 Since the expansion depth is fixed by design (no more than two hops), we focus on three storage parameters:
 \begin{equation}
-\mathbf{x}=(H,S,m),
+\mathbf{x}=(H,S,m).
 \end{equation}
 where $H$ is the capacity of the high-utility layer, and $S$ and $m$ are the number of semantic-shared buckets and the per-bucket seed capacity, respectively.
 
@@ -12,7 +12,7 @@ Our objective is to maximize end-to-end query throughput under a recall constrai
 =
 \frac{T_b}{\mathbb{E}[T](\mathbf{x})}
 \quad \Longleftrightarrow \quad
-\min_{\mathbf{x}} \mathbb{E}[T](\mathbf{x}),
+\min_{\mathbf{x}} \mathbb{E}[T](\mathbf{x}).
 \end{equation}
 where $T_b$ is the average query latency of the baseline.
 
@@ -60,7 +60,7 @@ Substituting Equations~\eqref{eq:hot-latency} and~\eqref{eq:semantic-latency} in
 \begin{equation}
 \mathbb{E}[T]
 \approx
-aH+\bigl(1-p_h(H)\bigr)\bigl(bm+ce^{-\gamma m}+d\bigr),
+aH+\bigl(1-p_h(H)\bigr)\bigl(bm+ce^{-\gamma m}+d\bigr).
 \label{eq:compact-objective}
 \end{equation}
 where $a,b,c,d>0$ are calibrated constants, and terms independent of $H$ and $m$ are absorbed into the constant part.

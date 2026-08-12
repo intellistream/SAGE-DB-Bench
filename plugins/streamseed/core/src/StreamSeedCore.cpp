@@ -111,7 +111,7 @@ struct DictionarySeedSource : ISeedSource {
     std::vector<std::vector<uint64_t>>& dictionary_age;
     std::vector<omp_lock_t>& dictionary_locks;
     uint64_t& dictionary_clock;
-    uint64_t& dictionary_round;
+    uint64_t current_batch_round;
     float& adaptive_m_gate;
     float& adaptive_o_gate;
     bool level1_only;
@@ -135,7 +135,7 @@ struct DictionarySeedSource : ISeedSource {
                         std::vector<std::vector<uint64_t>>& dictionary_age,
             std::vector<omp_lock_t>& dictionary_locks,
                         uint64_t& dictionary_clock,
-                        uint64_t& dictionary_round,
+                        uint64_t current_batch_round,
                         float& adaptive_m_gate,
                         float& adaptive_o_gate,
             bool level1_only,
@@ -151,7 +151,7 @@ struct DictionarySeedSource : ISeedSource {
               dictionary_age(dictionary_age),
               dictionary_locks(dictionary_locks),
                             dictionary_clock(dictionary_clock),
-              dictionary_round(dictionary_round),
+              current_batch_round(current_batch_round),
               adaptive_m_gate(adaptive_m_gate),
               adaptive_o_gate(adaptive_o_gate),
               level1_only(level1_only),
@@ -238,10 +238,7 @@ struct DictionarySeedSource : ISeedSource {
 
         // Cold-start protection: disable secondary strategy in early rounds.
         constexpr uint64_t warmup_rounds = 5;
-        uint64_t current_round = 0;
-#pragma omp atomic read
-        current_round = dictionary_round;
-        if (current_round <= warmup_rounds) {
+        if (current_batch_round <= warmup_rounds) {
             omp_unset_lock(&dictionary_locks[slot]);
             return tls_matched_ids;
         }
@@ -296,11 +293,6 @@ struct DictionarySeedSource : ISeedSource {
         uint64_t tick = 0;
 #pragma omp atomic capture
         tick = ++dictionary_clock;
-
-        if (record.query_id == 0) {
-    #pragma omp atomic
-            dictionary_round++;
-        }
 
         omp_set_lock(&dictionary_locks[slot]);
         std::vector<idx_t>& slot_ids = dictionary[slot];
@@ -733,7 +725,7 @@ std::unique_ptr<ISeedSource> create_seed_source(
     std::vector<std::vector<uint64_t>>& warm_seed_dictionary_age,
         std::vector<omp_lock_t>& warm_seed_dictionary_locks,
     uint64_t& warm_seed_dictionary_clock,
-    uint64_t& warm_seed_dictionary_round,
+    uint64_t current_batch_round,
     float& warm_seed_adaptive_m_gate,
     float& warm_seed_adaptive_o_gate) {
     if (config.use_dictionary()) {
@@ -746,7 +738,7 @@ std::unique_ptr<ISeedSource> create_seed_source(
                         warm_seed_dictionary_age,
                         warm_seed_dictionary_locks,
             warm_seed_dictionary_clock,
-                        warm_seed_dictionary_round,
+            current_batch_round,
                         warm_seed_adaptive_m_gate,
                         warm_seed_adaptive_o_gate,
                         config.hint_level1_only != 0,

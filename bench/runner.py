@@ -641,16 +641,27 @@ class BenchmarkRunner:
         query_pool = None
         query_rng = None
         fixed_query_indices = None
+        non_repeating_query_indices = None
+        non_repeating_query_cursor = 0
         query_sample_size = op.get("querySampleSize") or op.get("query_sample_size")
         query_sample_mode = str(op.get("querySampleMode", op.get("query_sample_mode", "per_batch"))).lower()
         if continuous_query_interval > 0:
             query_pool = self._load_query_pool(op)
             self.attrs["querySize"] = int(query_sample_size) if query_sample_size is not None else len(query_pool)
+            if query_sample_mode in ("non_repeating", "non-repeating") and query_sample_size is None:
+                raise ValueError("querySampleSize is required for querySampleMode=non_repeating")
             if query_sample_size is not None:
                 seed = int(op.get("querySampleSeed", op.get("query_sample_seed", 0)))
                 query_rng = np.random.default_rng(seed)
                 if query_sample_mode in ("fixed", "once"):
                     _, fixed_query_indices = self._make_continuous_queries(query_pool, op, query_rng, None)
+                elif query_sample_mode in ("non_repeating", "non-repeating"):
+                    replace = bool(op.get("querySampleReplace", op.get("query_sample_replace", False)))
+                    if replace:
+                        raise ValueError(
+                            "querySampleReplace=true is incompatible with querySampleMode=non_repeating"
+                        )
+                    non_repeating_query_indices = query_rng.permutation(len(query_pool))
         
         # 生成事件时间戳（根据 eventRate 生成理想到达时间，微秒）
         event_timestamps = generate_timestamps(count, event_rate) if event_rate > 0 else np.zeros(count, dtype=np.int64)
@@ -732,8 +743,21 @@ class BenchmarkRunner:
                 current_range_start = start_idx + batch_start
                 current_range_end = start_idx + batch_end
                 progress_pct = (inserted_count / count) * 100
+                current_fixed_indices = fixed_query_indices
+                if non_repeating_query_indices is not None:
+                    next_query_cursor = non_repeating_query_cursor + int(query_sample_size)
+                    if next_query_cursor > len(non_repeating_query_indices):
+                        raise RuntimeError(
+                            "Non-repeating query pool exhausted: "
+                            f"requested indices [{non_repeating_query_cursor}, {next_query_cursor}), "
+                            f"but query pool contains only {len(non_repeating_query_indices)} queries"
+                        )
+                    current_fixed_indices = non_repeating_query_indices[
+                        non_repeating_query_cursor:next_query_cursor
+                    ]
+                    non_repeating_query_cursor = next_query_cursor
                 queries, query_indices = self._make_continuous_queries(
-                    query_pool, op, query_rng, fixed_query_indices
+                    query_pool, op, query_rng, current_fixed_indices
                 )
                 self.attrs["continuousQuerySizes"].append(len(queries))
                 if query_indices is not None:

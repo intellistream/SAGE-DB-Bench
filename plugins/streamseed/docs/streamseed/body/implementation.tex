@@ -1,18 +1,19 @@
 \section{Implementation}
 In this section, we describe the implementation of \system and discuss its remaining limitations.
 \subsection{Plugin Architecture}
-We implement \system as a backend-agnostic plugin layer rather than tightly integrating it into a specific ANNS backend.
-The plugin exposes a unified interface for index setup, insertion, deletion, and query execution, while each backend is connected through a lightweight adapter that maps backend-specific operations to this interface.
-This design keeps integration minimally invasive: \system does not modify the index construction, update policy, or native search procedure of the backend, and all seed management logic is implemented outside the backend core. The same benchmark pipeline is used to evaluate both the original backend and its \system-enabled variant under identical workload and system settings.
-All deployment parameters are externalized in configuration files, e.g., the high-utility layer capacity, the number of semantic-shared buckets, and the per-bucket seed capacity.
-An explicit switch, \texttt{BriskSeed\_mode}, enables or disables \system on the same backend, and the benchmark runner logs the effective configuration with the dataset, batch settings, and backend identifier at startup.
-This separation between system logic and experiment configuration enables deterministic reruns and fair comparisons across different ANNS backends.
+We implement \system as a backend-agnostic plugin layer rather than tightly integrating it into a specific ANNS backend. Each backend is connected through a lightweight adapter that exposes a unified interface for index setup, insertion, deletion, and query execution. \system does not modify the backend's index construction, update policy, or original search procedure; all seed management logic is implemented outside the backend core. To ensure fair and reproducible evaluation, the same benchmark pipeline is used for both the original backend and its \system-enabled variant under identical workloads and system settings. Deployment parameters, such as the high-utility capacity, the number of semantic-shared buckets, and the per-bucket seed capacity, are externalized in configuration files and logged together with dataset, batch, and backend settings at startup.
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/qps_recall_all1.pdf}
+\caption{QPS and Recall comparisons between baseline and baseline-\system on three datasets.}
+\label{fig:qps-recall-three-datasets}
+\end{figure*}
 
 
 \subsection{Limitations}
 The current implementation still leaves some limitations.
-First, \system works best in common dynamic ANNS scenarios where the indexed database is large and each update batch modifies only a small fraction of it, such as online recommendation.
+First, \system works best in common dynamic ANNS scenarios where the indexed database is large, and each update batch modifies only a small fraction of it, such as online recommendation.
 When updates are large relative to the existing data, seed effectiveness may be significantly weakened, causing more fallbacks and limited speedups.
-Second, the current prototype maintains seeds in memory and updates them online, but does not persist seed states across process restarts.
-After a restart, previously accumulated seed statistics are not retained.
+Second, the current prototype maintains seeds in memory and updates them online, but does not persist seed states on disks.
+After a process restart, previously accumulated seed statistics are not retained.
 Finally, \system currently targets single-node deployments; distributed seed placement and consistency across index partitions are left for future work.

@@ -11,53 +11,93 @@ Section 3.3 gives a complexity analysis of \system.
 
 Motivated by the observations and challenges in Section~2, we design \textbf{\system} as a three-layer online framework for accelerating dynamic ANNS. 
 \system is built on a simple principle: historical search outcomes, referred to as \emph{seeds}, should be reused only when they can be represented compactly, activated selectively, and trusted safely under continuous updates. 
-To this end, \system combines three layers that map directly to the three challenges in Section~2: Seed Storage Layer, Seed-Guided Search Layer, and Reliability Control Layer, as shown in Figure~\ref{fig:briskseed-design-overview}.
+To this end, \system combines three layers that map directly to the three challenges in Section~2: Seed Storage Layer, Seed-Guided Search Layer, and Reliability Control Layer, as shown in Algorithm~\ref{algo:Seed Online Reuse}.
 
 \noindent\textbf{(1) Seed Storage Layer (addresses Challenge 1).}
-This layer determines how historical outcomes are represented, retained, and refreshed under bounded memory. 
-To exploit the high top-$k$ overlap across nearby rounds, \system organizes reusable history in a two-tier seed storage: a high-utility tier for highly valuable outcomes and a semantic-shared tier for compact long-tail coverage. 
-Each seed stores historical top-$k$ IDs together with lightweight metadata needed for retrieval and maintenance. 
-In this way, past outcomes are encoded as reusable guidance rather than final answers, while retention and eviction remain explicitly budgeted.
+This layer determines how seeds are represented, retained, and refreshed under bounded memory. 
+To exploit the high top-$k$ overlap across nearby rounds, \system employs a two-tier seed storage: a high-utility tier $\mathcal{S}_H$ for highly valuable seeds and a semantic-shared tier $\mathcal{S}_S$ for compact long-tail seed coverage. 
+Each seed $r$ stores historical top-$k$ IDs together with lightweight metadata for retrieval and maintenance. 
+In this way, past outcomes are encoded as reusable guidance rather than final answers, and every query updates the seed storage with the newest results (Lines 4 and 17).
 
 \noindent\textbf{(2) Seed-Guided Search Layer (addresses Challenge 2).}
-This layer determines how the stored results guide the search. 
-For each query, \system first retrieves seeds through exact lookup, signature-based scan, or bounded semantic probing, and then converts the selected seed into provisional candidates through bounded neighbor expansion. 
-The guidance strategy is tier-aware: high-utility seeds use one-hop expansion by default, while semantic-shared seeds use guarded multi-hop expansion only when one-hop evidence
-is insufficient.
+This layer determines how the seeds guide the search. 
+For each query, \system first retrieves a seed through exact lookup, signature-based scan, or bounded semantic probing (Line 1). If no seed is available, the pipeline falls back to baseline search (Lines 2-5). Otherwise, the selected seed is converted into provisional candidates $\hat{\mathbf{z}}$ via bounded neighbor expansion. 
+The strategy is tier-aware: high-utility seeds use one-hop expansion by default (Lines 6-7), while semantic-shared seeds use guarded multi-hop expansion only when one-hop evidence is insufficient (Lines 8-9).
 This design enables efficient reuse under skewed workloads while preventing uncontrolled search overhead.
 
 \noindent\textbf{(3) Reliability Control Layer (addresses Challenge 3).}
 This layer ensures that reuse improves end-to-end efficiency without degrading recall. 
-Provisional candidates are checked by a lightweight acceptance policy, where acceptance requires both strong local candidate quality and consistency with the seed's historical neighborhood. 
-If either signal is weak, \system falls back to the baseline search path. 
+Provisional candidates are checked by a lightweight acceptance policy, where acceptance requires both strong local candidate quality and consistency with the seed's historical neighborhood (Lines 11-14). 
+If either signal is weak, \system falls back to the baseline search path (Lines 15-16). 
 This explicit validation gate ensures that acceleration remains beneficial while bounding recall risk.
 
 These three layers are co-designed rather than independent. 
-The seed storage layer determines what is reusable, the seed-guided search layer determines how reuse enters search, and the reliability control layer determines when provisional candidates are trustworthy enough to be accepted. 
+The seed storage layer determines what is reusable, the seed-guided search layer determines how reuse enters the search, and the reliability control layer determines when provisional candidates are trustworthy enough to be accepted. 
 Together, they form a bounded online reuse framework that aligns directly with the three design challenges and remains robust under continuous updates.
 
 
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figures/figure3.png}
-\caption{BriskSeed design overview.}
-\label{fig:briskseed-design-overview}
-\end{figure}
+% \begin{figure}[t]
+% \centering
+% \includegraphics[width=\columnwidth]{figures/figure3.png}
+% \caption{BriskSeed design overview.}
+% \label{fig:briskseed-design-overview}
+% \end{figure}
+
+\begin{algorithm}[t] 
+\small
+\caption{Query Process of \system} 
+\label{algo:Seed Online Reuse}
+\LinesNumbered 
+\KwIn{Query $q$, Graph Index $\mathcal{I}$, Seed Storage $\mathcal{S}_H$ (high-utility), $\mathcal{S}_S$ (semantic-shared)} 
+\KwOut{Top-$k$ results $R$}
+
+$r \leftarrow \textsc{RetrieveSeed}(q,\mathcal{S}_H,\mathcal{S}_S)$;  \tcp{$r$ is a seed}
+
+\If{$r = \emptyset$}{
+$R \leftarrow \textsc{BaselineSearch}(q,\mathcal{I})$;
+
+$\textsc{UpdateSeedStore}(q,R,\mathcal{S}_H,\mathcal{S}_S)$;
+
+\Return $R$;
+}
+
+
+\If{$r$ is High-Utility}{
+$C \leftarrow \textsc{OneHopExpansion}(q,r,\mathcal{I})$; 
+}
+\ElseIf{$r$ is Semantic-Shared}{
+$C \leftarrow \textsc{GuardedMultiHopExpansion}(q,r,\mathcal{I})$;
+}
+$\hat{\mathbf{z}} \leftarrow \textsc{SelectTopK}(C)$; \tcp{$\hat{\mathbf{z}}$ is provisional top-$k$}
 
 
 
+$\mathrm{gap} \leftarrow \textsc{ComputeBoundaryGap}(\hat{\mathbf{z}})$;
+
+$\mathrm{overlap} \leftarrow \textsc{ComputeOverlap}(\hat{\mathbf{z}}, r)$;
+
+\If{$\mathrm{gap}>\theta_{\mathrm{gap}}$ \textbf{and} $\mathrm{overlap}>\theta_{\mathrm{overlap}}$}{
+$R \leftarrow \hat{\mathbf{z}}$;
+}
+\Else{
+$R \leftarrow \textsc{BaselineSearch}(q,\mathcal{I})$; 
+}
+
+
+$\textsc{UpdateSeedStore}(q,R,\mathcal{S}_H,\mathcal{S}_S)$;
+
+\Return $R$;
+\end{algorithm}
 
 \subsection{Unified Online Reuse Pipeline}
-In this subsection, we detail the modules of BriskSeed and their interactions in the unified online reuse pipeline. Important symbols are summarized in Table~\ref{tab:pipeline-symbols}.
+In this subsection, we detail the modules of \system and their interactions in the unified online reuse pipeline. Important symbols are summarized in Table~\ref{tab:pipeline-symbols}.
 
 
 
 \subsubsection{Seed Representation and Storage}
 
 \paragraph{Seed representation}
-We first define the representation of a seed, and then describe how such seeds are organized in the storage.
-
 Each seed records a past successful search outcome together with lightweight metadata:
 \begin{equation}
 %r=\langle \mathbf{z}, n_b, \beta, \rho \rangle,
@@ -74,11 +114,10 @@ The signature $\sigma$ supports similarity-based retrieval for new or related qu
 The birth time $n_b$ and reuse count $\rho$ summarize freshness and past effectiveness, and are used for seed ranking, retention, and eviction.
 
 \paragraph{Query signature}
-To support low-overhead similarity-based retrieval, \system computes a compact locality-preserving signature for each query.
-Given a query vector $q$, \system uses fixed random projections to generate a 64-bit signature:
+\system computes a compact, locality-preserving 64-bit signature for each query using fixed random projections, enabling low-overhead similarity-based retrieval:
 \begin{equation}
 \sigma(q)_i=\mathbf{1}[\mathbf{a}_i^\top q \ge 0],
-\quad i=1,\ldots,64,
+\quad i=1,\ldots,64.
 \end{equation}
 where $\mathbf{a}_1,\ldots,\mathbf{a}_{64}$ are fixed random projection vectors.
 For a seed generated by a historical query $q_r$, we store $\sigma=\sigma(q_r)$ as its source-query signature.
@@ -89,7 +128,7 @@ In particular, the similarity between a query $q$ and a seed $r$ can be estimate
 \begin{equation}
 \mathrm{sim}_{\sigma}(q,r)
 =
-1-\frac{\mathrm{Ham}(\sigma(q),\sigma_r)}{64},
+1-\frac{\mathrm{Ham}(\sigma(q),\sigma_r)}{64}.
 \label{eq:Ham}
 \end{equation}
 where $\sigma_r$ is the signature stored in seed $r$.
@@ -135,7 +174,7 @@ A fully shared storage limits memory usage but mixes frequently useful seeds wit
 
 
 \begin{table}[t]
-	\caption{Symbols used in BriskSeed design.}
+	\caption{Symbols used in \system design}
 	\label{tab:pipeline-symbols}
 	\centering
 	%\footnotesize
@@ -146,7 +185,7 @@ A fully shared storage limits memory usage but mixes frequently useful seeds wit
 		\midrule
 		\multicolumn{2}{l}{\textit{Storage and Retrieval}} \\
 		$q$ & Incoming query. \\
-        $r=\langle \mathbf{z}, \kappa, \sigma, n_b, \rho \rangle$ & Record of a seed: historical top-$k$ IDs, source query key, signature, birth time, source query ID, and accepted-reuse count. \\
+        $r=\langle \mathbf{z}, \kappa, \sigma, n_b, \rho \rangle$ & A seed: historical top-$k$ IDs, source query key, signature, birth time, and accepted-reuse count. \\
         $\sigma(q)$ & Signature of query $q$.\\
         $\mathrm{sim}_{\sigma}(q,r)$ & Hamming similarity between $q$ and a seed $r$.\\
 		$S,\ m,\ P,\ H$ & Semantic bucket count, per-bucket seed limit, probing width, and high-utility layer capacity. \\
@@ -158,7 +197,7 @@ A fully shared storage limits memory usage but mixes frequently useful seeds wit
         $\mathrm{overlap}(q)$ & Overlap between $\mathbf{z}$ and $\hat{\mathbf{z}}$\\ 
         
 		\midrule
-		\multicolumn{2}{l}{\textit{Writeback and Maintenance}} \\
+		\multicolumn{2}{l}{\textit{Writeback}} \\
 		$\mathrm{keep}(r)$ & Keep score of seed $r$ for eviction. \\
 		\bottomrule
 	\end{tabular}
@@ -192,15 +231,15 @@ This path is effective for recurring queries, because the seed was generated by 
 
 \textbf{Signature-based scan in the high-utility layer.}
 If exact lookup misses, \system scans the high-utility layer using the query signature.
-For each seed $r$ in this layer, \system compares $\sigma(q)$ with the seed's source-query signature $\sigma_r$ using Hamming similarity $\mathrm{sim}_{\sigma}(q,r)$ listed in Equation~\ref{eq:Ham}.
+For each seed $r$ in this layer, \system compares $\sigma(q)$ with the seed's source-query signature $\sigma_r$ using Hamming similarity $\mathrm{sim}_{\sigma}(q,r)$ listed in Equation~\eqref{eq:Ham}.
 Since the high-utility layer has a small fixed capacity $H$, this scan only requires $O(H)$ 64-bit comparisons.
-Each candidate seed is then ranked by a lightweight score that combines signature similarity and past reuse effectiveness:
+Each candidate seed is then ranked by a lightweight score that combines signature similarity and past reuse effectiveness ($\lambda$ is set to 0.7 in our implementation):
 \begin{equation}
 u(r)
 =
 \lambda \cdot \mathrm{sim}_{\sigma}(q,r)
 +
-(1-\lambda)\cdot \widetilde{\rho}_r ,
+(1-\lambda)\cdot \widetilde{\rho}_r.
 \label{eg:scoring}
 \end{equation}
 where $\widetilde{\rho}_r$ is the normalized successful reuse count of seed $r$.
@@ -216,10 +255,10 @@ Let $s(q)$ denote the bucket key derived from $\sigma(q)$, such as a short prefi
 \mathcal{N}(q)=\{s(q)\}\cup \mathrm{Near}_{P-1}(s(q)), \; P\ll S.
 \end{equation}
 Because each bucket stores at most $m$ seeds, this step inspects at most $Pm$ seeds.
-All inspected seeds are ranked using the same scoring mechanism listed in Equation~\ref{eg:scoring}, and the highest-ranked seed is selected.
+All inspected seeds are ranked using the same scoring mechanism listed in Equation~\eqref{eg:scoring}, and the highest-ranked seed is selected.
 
 This seed retrieval process is intentionally ordered from high-confidence and low-cost paths to broader but less certain paths.
-Exact lookup serves repeated queries, signature-based scan exploits high-utility seeds for related queries, and semantic-shared probing allows long-tail historical results to be reused under bounded retrieval cost.
+Exact lookup serves repeated queries, signature-based scan exploits high-utility seeds for related queries, and semantic-shared probing allows long-tail seeds to be reused under bounded retrieval cost.
 
 
 \iffalse
@@ -262,13 +301,13 @@ The expansion depth depends on where the selected seed comes from.
 If the seed is retrieved from the high-utility layer, \system performs one-hop expansion by default.
 This applies to both exact-key matches and signature-based matches in the high-utility layer.
 Because high-utility seeds are selected from a small set of recent and repeatedly useful seeds, they usually have higher retrieval confidence.
-Therefore, one-hop expansion is usually sufficient to collect strong candidates while keeping the search cost low.
+Therefore, one-hop expansion is usually sufficient to cover strong candidates while keeping the search cost low.
 
 For a seed retrieved from the semantic-shared layer, \system uses a slightly more conservative expansion strategy.
 Since semantic-shared seeds are kept for broader long-tail reuse opportunities, the selected seed may be less tightly aligned with the current query.
 \system therefore first performs one-hop expansion and evaluates the best candidate obtained.
 If this candidate is not sufficiently close to the query, \system expands one more hop; otherwise, it stops after one hop.
-The expansion depth is capped at two hops to prevent rapid frontier growth and keep the candidate collection bounded.
+The expansion depth is capped at two hops to prevent rapid frontier growth and keep the candidate collection overhead limited.
 
 After candidate collection, \system ranks all collected candidates and truncates them to form a provisional top-$k$ result, denoted by $\hat{\mathbf{z}}$.
 This provisional result is then passed to the validation stage described next.
@@ -279,7 +318,7 @@ This provisional result is then passed to the validation stage described next.
 
 \subsubsection{Candidate Validation}
 Since the provisional top-$k$ result $\hat{\mathbf{z}}$ is derived from local expansion around historical results, \system does not return it blindly.
-Instead, it validates $\hat{\mathbf{z}}$ using two inexpensive signals: the top-$k$ boundary gap within the collected candidate set and the overlap with the selected seed.
+Instead, it validates $\hat{\mathbf{z}}$ using two inexpensive signals: the top-$k$ boundary gap within the candidate set and the overlap with the seed.
 
 
 \paragraph{Top-$k$ boundary gap}
@@ -289,15 +328,14 @@ Let $c_k$ denote the $k$-th candidate in this ranking and $c_{k+1}$ denote the n
 \begin{equation}
 \mathrm{gap}_k(q)=
 \frac{d(q,c_{k+1})-d(q,c_k)}
-{d(q,c_k)+\epsilon},
+{d(q,c_k)}.
 \end{equation}
-where $\epsilon>0$ is a small constant for numerical stability.
 This signal measures whether the provisional top-$k$ result has a clear boundary within the collected candidate set.
 A small $\mathrm{gap}_k(q)$ means that the boundary between included and excluded candidates is ambiguous, making the provisional result sensitive to small candidate changes.
 In such cases, \system treats the provisional result conservatively.
 
 \paragraph{Overlap with the selected seed}
-The boundary gap only reflects the ranking structure within the collected candidate set.
+The boundary gap only reflects the ranking quality within the collected candidate set.
 It does not indicate whether the selected seed still provides relevant guidance for the current query.
 Therefore, \system also compares the provisional top-$k$ result $\hat{\mathbf{z}}$ with the historical top-$k$ result $\mathbf{z}$ stored in the selected seed:
 \begin{equation}
@@ -324,11 +362,11 @@ Together, these two signals allow \system to use seed-guided results conservativ
 After each query finishes, \system writes the final top-$k$ results back to update seeds. 
 The final result may come from an accepted seed-guided path or from the original backend search after fallback.
 In both cases, it provides fresh search information that can be used to update existing seeds or create new ones.
-The writeback step updates seed statistics, refreshes stored results when appropriate, and maintains the two-tier seed store under bounded capacity.
+The writeback step updates seed statistics and refreshes stored results when appropriate.
 
 If the query already has a seed in the high-utility layer, \system updates the corresponding record under the same query key.
 The stored top-$k$ result is refreshed, the source-query signature is updated if needed, and the reuse statistics are adjusted according to whether the seed-guided result was accepted.
-If the query does not have a high-utility entry, \system creates a new seed from the final top-$k$ result and inserts it into the semantic-shared layer according to the bucket key derived from its source-query signature.
+If the query does not have a high-utility entry, \system creates a new seed from the top-$k$ result and inserts it into the semantic-shared layer according to the bucket key derived from its source-query signature.
 
 When the target semantic-shared bucket is full, \system evicts the seed with the lowest keep score:
 \begin{equation}
@@ -341,8 +379,6 @@ By evicting low-score seeds within each bucket, \system bounds memory usage whil
 Writeback also allows seeds to move between the two layers over time.
 A seed in the semantic-shared layer can be promoted to the high-utility layer when it is repeatedly reused successfully or receives a high keep score.
 Conversely, a seed in the high-utility layer can be demoted to the semantic-shared layer when it becomes old or shows low reuse effectiveness.
-Since the high-utility layer has a fixed capacity $H$, promotion may trigger eviction or demotion of the lowest-value high-utility seed.
-Overall, this update policy keeps the high-utility layer focused on a small set of valuable seeds, while the semantic-shared layer maintains broader long-tail coverage under bounded memory.
 
 
 \subsection{Theoretical Analysis}
@@ -350,7 +386,6 @@ Overall, this update policy keeps the high-utility layer focused on a small set 
 
 This subsection analyzes why \system can improve query throughput and when such improvement is feasible. Let $T_b$ denote the average per-query latency of the baseline under a fixed recall target.
 
-\subsubsection{Time Complexity Comparison}
 For each query, \system first retrieves a seed from the two-tier seed storage. In the high-utility layer, exact-key lookup takes $O(1)$ time and signature-based scan consumes $O(H)$ lightweight 64-bit Hamming comparisons. When it proceeds to the semantic-shared layer, the semantic probing inspects at most $P$ buckets and $m$ seeds per bucket, yielding $O(Pm)$ cost. Therefore, seed retrieval is bounded by $O(H+Pm)$.
 
 Given a retrieved seed, the candidate collection performs one-hop or guarded two-hop neighbor expansion under degree bound $M$, incurring $O(kM)$ or $O(kM^2)$ time cost. Validation is bounded by the candidate set size, while writeback takes at most $O(m+H)$ time for bucket maintenance and possible high-utility layer adjustment. Hence, the worst-case reuse time cost is
@@ -369,7 +404,7 @@ Thus, the query latency reduction over the baseline is
 \begin{equation}
 \Delta = T_b - T_{\text{BriskSeed}} = p_{\text{acc}}T_b - T_{\text{reuse}}.
 \end{equation}
-Here, $T_b$ depends on the index size $N$; for HNSW, it is commonly modeled as $T_b=O(\log N)$. In contrast, $T_{\text{reuse}}$ is bounded by fixed system parameters $H$, $P$, $m$, $k$, and $M$, which are much smaller than $N$. Therefore, \system can improve query throughput over the baseline when seed-guided results are accepted frequently enough, especially on large indices.
+Here, $T_b$ depends on the index size $N$; for HNSW, it is commonly modeled as $T_b=O(\log N)$. In contrast, $T_{\text{reuse}}$ is bounded by fixed system parameters $H$, $P$, $m$, $k$, and $M$, which are much smaller than $N$. Therefore, \system can improve query throughput over the baseline when seed-guided results are accepted frequently, especially on large indices.
 
 
 

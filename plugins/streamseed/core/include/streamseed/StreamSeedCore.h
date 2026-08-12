@@ -132,7 +132,7 @@ std::unique_ptr<ISeedSource> create_seed_source(
     std::vector<std::vector<uint64_t>>& warm_seed_dictionary_age,
         std::vector<omp_lock_t>& warm_seed_dictionary_locks,
     uint64_t& warm_seed_dictionary_clock,
-    uint64_t& warm_seed_dictionary_round,
+    uint64_t current_batch_round,
     float& warm_seed_adaptive_m_gate,
     float& warm_seed_adaptive_o_gate);
 

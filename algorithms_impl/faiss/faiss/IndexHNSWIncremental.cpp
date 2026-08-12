@@ -322,6 +322,14 @@ void IndexHNSWIncremental::search(
 
     const OptimizationConfig optimization_config =
             streamseed::resolve_optimization_config(hnsw, params);
+    // Count warm-up by top-level query batches rather than by the presence of
+    // a particular query ID. Keep a stable snapshot so every query in this
+    // batch observes the same round, regardless of OpenMP scheduling.
+    uint64_t current_batch_round = 0;
+    if (optimization_config.streamseed_enabled() && n > 0) {
+#pragma omp atomic capture
+        current_batch_round = ++warm_seed_dictionary_round;
+    }
     double search_block_t0 = getmillisecs();
         streamseed::prepare_dictionary_if_needed(
             warm_seed_dictionary,
@@ -343,7 +351,7 @@ void IndexHNSWIncremental::search(
             warm_seed_dictionary_age,
             warm_seed_dictionary_locks,
             warm_seed_dictionary_clock,
-            warm_seed_dictionary_round,
+            current_batch_round,
             warm_seed_adaptive_m_gate,
             warm_seed_adaptive_o_gate);
 
@@ -353,6 +361,7 @@ void IndexHNSWIncremental::search(
     size_t n1 = 0, n2 = 0, n3 = 0, ndis = 0, nreorder = 0;
     size_t hint_used = 0;
     size_t level1_hits = 0;
+    size_t level2_pass = 0;
 
     idx_t check_period =
             InterruptCallback::get_period_hint(
@@ -375,7 +384,7 @@ void IndexHNSWIncremental::search(
             std::unique_ptr<DistanceComputer> dis(
                     storage_distance_computer(storage));
 
-#pragma omp for reduction(+ : n1, n2, n3, ndis, nreorder, hint_used, level1_hits) schedule(guided)
+#pragma omp for reduction(+ : n1, n2, n3, ndis, nreorder, hint_used, level1_hits, level2_pass) schedule(guided)
             for (idx_t i = i0; i < i1; i++) {
                 idx_t* idxi = labels + i * k;
                 float* simi = distances + i * k;
@@ -421,6 +430,9 @@ void IndexHNSWIncremental::search(
                     hint_result = hint_strategy->apply(hint_ctx);
                     if (hint_result.used) {
                         hint_used += 1;
+                        if (!level1_hit) {
+                            level2_pass += 1;
+                        }
                     }
                 }
 
@@ -474,6 +486,11 @@ void IndexHNSWIncremental::search(
                  static_cast<size_t>(i1 - i0),
                  static_cast<int64_t>(i0),
                  static_cast<int64_t>(i1));
+            printf("streamseed_level2_pass %zu/%zu queries in chunk [%" PRId64 ", %" PRId64 ")\n",
+                   level2_pass,
+                   static_cast<size_t>(i1 - i0),
+                   static_cast<int64_t>(i0),
+                   static_cast<int64_t>(i1));
             if (!slot_hits.empty()) {
                 size_t occupied_slots = 0;
                 size_t collisions = 0;
