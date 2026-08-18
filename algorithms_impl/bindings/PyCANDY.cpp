@@ -116,7 +116,15 @@ std::vector<faiss::idx_t> index_search_warm(
   int hint_gate_min_samples,
   int hint_table_slots,
   int hint_slot_capacity,
-  py::object query_ids_obj = py::none()) {
+  py::object query_ids_obj = py::none(),
+  int hint_hot_capacity = 512,
+  int hint_probe_count = 4,
+  float hint_retrieval_threshold = 0.70f,
+  int hint_promotion_hits = 3,
+  int hint_demotion_window = 20000,
+  float hint_signature_weight = 0.70f,
+  int hint_boundary_gap_profile = 0,
+  int hint_semantic_enabled = 1) {
   py::buffer_info x_info = x.request();
   const float* x_ptr = static_cast<const float*>(x_info.ptr);
     std::vector<faiss::idx_t> query_ids_storage;
@@ -148,6 +156,14 @@ std::vector<faiss::idx_t> index_search_warm(
         params.hint_gate_min_samples = hint_gate_min_samples;
         params.hint_table_slots = hint_table_slots;
         params.hint_slot_capacity = hint_slot_capacity;
+        params.hint_hot_capacity = hint_hot_capacity;
+        params.hint_probe_count = hint_probe_count;
+        params.hint_retrieval_threshold = hint_retrieval_threshold;
+        params.hint_promotion_hits = hint_promotion_hits;
+        params.hint_demotion_window = hint_demotion_window;
+        params.hint_signature_weight = hint_signature_weight;
+        params.hint_boundary_gap_profile = hint_boundary_gap_profile;
+        params.hint_semantic_enabled = hint_semantic_enabled;
         if (!query_ids_storage.empty()) {
             params.query_ids = query_ids_storage.data();
             params.query_ids_size = static_cast<faiss::idx_t>(query_ids_storage.size());
@@ -164,6 +180,7 @@ std::vector<faiss::idx_t> index_search_warm(
   std::vector<float> x_vec(x_ptr, x_ptr + x_info.size);
   return index->search_arrays(n, x_vec, k, ef_search);
 }
+
 py::dict configMapToDict(const std::shared_ptr<ConfigMap> &cfg) {
   py::dict d;
   auto i64Map = cfg->getI64Map();
@@ -514,6 +531,14 @@ PYBIND11_MODULE(PyCANDYAlgo, m) {
                  py::arg("hint_table_slots") = 1024,
                  py::arg("hint_slot_capacity") = 2,
                  py::arg("query_ids") = py::none(),
+                 py::arg("hint_hot_capacity") = 512,
+                 py::arg("hint_probe_count") = 4,
+                 py::arg("hint_retrieval_threshold") = 0.70f,
+                 py::arg("hint_promotion_hits") = 3,
+                 py::arg("hint_demotion_window") = 20000,
+                 py::arg("hint_signature_weight") = 0.70f,
+                 py::arg("hint_boundary_gap_profile") = 0,
+                 py::arg("hint_semantic_enabled") = 1,
                "Search k nearest neighbors with efSearch and StreamSeed-Core hint control")
           .def("train",&faiss::Index::train_arrays)
           .def("add_with_ids", &faiss::Index::add_arrays_with_ids)

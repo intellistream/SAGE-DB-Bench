@@ -23,6 +23,14 @@ class StreamSeedConfig:
     hint_gate_min_samples: int = 128
     hint_table_slots: int = 1024
     hint_slot_capacity: int = 2
+    hint_hot_capacity: int = 512
+    hint_probe_count: int = 4
+    hint_retrieval_threshold: float = 0.70
+    hint_signature_weight: float = 0.70
+    hint_boundary_gap_profile: int = 0
+    hint_semantic_enabled: int = 1
+    hint_promotion_hits: int = 3
+    hint_demotion_window: int = 20000
 
 
 class StreamSeedBackend(ABC):

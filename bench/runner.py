@@ -583,7 +583,9 @@ class BenchmarkRunner:
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         sample_size = op.get("querySampleSize") or op.get("query_sample_size")
         if sample_size is None:
-            return query_pool, None
+            # Full-pool row order is stable across periodic searches.
+            query_ids = np.arange(len(query_pool), dtype=np.uint32)
+            return query_pool, query_ids
 
         sample_size = int(sample_size)
         replace = bool(op.get("querySampleReplace", op.get("query_sample_replace", False)))
@@ -1113,10 +1115,16 @@ class BenchmarkRunner:
         if self.use_worker and self.worker and hasattr(self.worker, 'query_timestamps'):
             query_ts_count_before = len(self.worker.query_timestamps)
         
+        # Dataset query rows have stable IDs; pass them to ID-keyed seed stores.
+        query_ids = np.arange(len(queries), dtype=np.uint32)
+
         # 一次性批量查询所有向量
         # 时间测量在 worker.query() 内部进行，避免引入锁等待时间
         try:
-            results = self.algo.query(queries, self.k)
+            try:
+                results = self.algo.query(queries, self.k, query_ids=query_ids)
+            except TypeError:
+                results = self.algo.query(queries, self.k)
             
             # 处理返回值格式
             if isinstance(results, tuple):

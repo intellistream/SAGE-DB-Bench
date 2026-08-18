@@ -71,19 +71,19 @@ sift:
   2:
     operation: "initial"
     start: 0
-    end: 500000
+    end: 900000
   3:
     operation: "batch_insert"
-    start: 500000
+    start: 900000
     end: 1000000
     batchSize: 10000
     eventRate: 10000
     continuousQuery: true
     queryFile: /root/ghr/CANDOR-Bench/raw_data/sift/queries_30000_128
     queryPoolSize: 30000
-    querySampleSize: 500
+    querySampleSize: 3000
     querySampleSeed: 42
-    querySampleMode: per_batch
+    querySampleMode: non_repeating
     # per_batch: 每个 batch 独立采样；fixed: 每个 batch 使用同一批 query；non_repeating: 跨 batch 全局无重复
   4:
     operation: "waitPending"

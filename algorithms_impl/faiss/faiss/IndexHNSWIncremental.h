@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <omp.h>
@@ -23,6 +24,10 @@
 namespace faiss {
 
 struct IndexHNSWIncremental;
+
+namespace streamseed {
+struct TwoTierSeedStore;
+}
 
 struct ReconstructFromNeighborsIncremental {
     typedef HNSWIncremental::storage_idx_t storage_idx_t;
@@ -94,6 +99,7 @@ struct IndexHNSWIncremental : Index {
     mutable uint64_t warm_seed_dictionary_round = 0;
     mutable float warm_seed_adaptive_m_gate = 0.0f;
     mutable float warm_seed_adaptive_o_gate = 0.0f;
+    mutable std::shared_ptr<streamseed::TwoTierSeedStore> warm_seed_two_tier_store;
 
     explicit IndexHNSWIncremental(int d = 0, int M = 32, MetricType metric = METRIC_L2);
     explicit IndexHNSWIncremental(Index* storage, int M = 32);

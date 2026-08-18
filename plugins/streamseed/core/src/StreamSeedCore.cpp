@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cinttypes>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -70,9 +71,83 @@ bool OptimizationConfig::use_dictionary() const {
     return streamseed_mode == STREAMSEED_CORE && hint_table_slots > 0;
 }
 
-bool OptimizationConfig::streamseed_enabled() const {
-    return streamseed_mode == STREAMSEED_CORE;
+bool OptimizationConfig::use_two_storage() const {
+    return streamseed_mode == STREAMSEED_TWO_STORAGE && hint_table_slots > 0;
 }
+
+bool OptimizationConfig::streamseed_enabled() const {
+    return streamseed_mode == STREAMSEED_CORE ||
+            streamseed_mode == STREAMSEED_TWO_STORAGE;
+}
+
+struct StoredSeedRecord {
+    uint64_t record_id = 0;
+    std::vector<idx_t> result_ids;
+    idx_t query_key = -1;
+    uint64_t signature = 0;
+    uint64_t birth_tick = 0;
+    uint64_t last_refresh_tick = 0;
+    uint64_t last_success_tick = 0;
+    uint32_t successful_reuses = 0;
+};
+
+struct TwoTierSeedStore {
+    idx_t record_k = 0;
+    size_t hot_capacity = 0;
+    size_t semantic_slots = 0;
+    size_t semantic_capacity = 0;
+    std::vector<StoredSeedRecord> hot;
+    std::unordered_map<idx_t, size_t> hot_exact;
+    std::vector<std::vector<StoredSeedRecord>> semantic;
+    uint64_t clock = 0;
+    uint64_t next_record_id = 1;
+    omp_lock_t lock;
+
+    TwoTierSeedStore() {
+        omp_init_lock(&lock);
+    }
+
+    ~TwoTierSeedStore() {
+        omp_destroy_lock(&lock);
+    }
+
+    void rebuild_hot_exact() {
+        hot_exact.clear();
+        for (size_t i = 0; i < hot.size(); ++i) {
+            if (hot[i].query_key >= 0) {
+                hot_exact[hot[i].query_key] = i;
+            }
+        }
+    }
+
+    void reset(
+            idx_t k,
+            size_t new_hot_capacity,
+            size_t new_semantic_slots,
+            size_t new_semantic_capacity) {
+        record_k = k;
+        hot_capacity = new_hot_capacity;
+        semantic_slots = new_semantic_slots;
+        semantic_capacity = new_semantic_capacity;
+        hot.clear();
+        hot.reserve(hot_capacity);
+        hot_exact.clear();
+        semantic.assign(semantic_slots, {});
+        for (auto& bucket : semantic) {
+            bucket.reserve(semantic_capacity);
+        }
+        clock = 0;
+        next_record_id = 1;
+    }
+
+    size_t semantic_size() const {
+        size_t total = 0;
+        for (const auto& bucket : semantic) {
+            total += bucket.size();
+        }
+        return total;
+    }
+};
 
 namespace {
 
@@ -101,6 +176,41 @@ float signature_similarity(uint64_t a, uint64_t b) {
     }
     constexpr float max_l1 = 8.0f * 255.0f;
     return 1.0f - static_cast<float>(l1) / max_l1;
+}
+
+size_t semantic_slot_from_signature(uint64_t signature, size_t slots) {
+    if (slots == 0) {
+        return 0;
+    }
+    uint64_t h = 1469598103934665603ULL;
+    for (int t = 0; t < 8; ++t) {
+        const uint64_t token =
+                ((signature >> (t * 8)) & 0xFFULL) ^
+                (static_cast<uint64_t>(t + 1) * 11400714819323198485ULL);
+        h ^= token;
+        h *= 1099511628211ULL;
+    }
+    return static_cast<size_t>(h % static_cast<uint64_t>(slots));
+}
+
+std::vector<size_t> semantic_probe_slots(
+        uint64_t signature,
+        size_t slots,
+        size_t probe_count) {
+    std::vector<size_t> probes;
+    if (slots == 0 || probe_count == 0) {
+        return probes;
+    }
+    probes.reserve(std::min(slots, probe_count));
+    for (size_t p = 0; p < probe_count && probes.size() < slots; ++p) {
+        const uint64_t probed_signature =
+                p == 0 ? signature : signature ^ (1ULL << ((p - 1) % 64));
+        const size_t slot = semantic_slot_from_signature(probed_signature, slots);
+        if (std::find(probes.begin(), probes.end(), slot) == probes.end()) {
+            probes.push_back(slot);
+        }
+    }
+    return probes;
 }
 
 struct DictionarySeedSource : ISeedSource {
@@ -179,11 +289,11 @@ struct DictionarySeedSource : ISeedSource {
             idx_t slot_key,
             const float* query,
             idx_t dim,
-            bool* level1_hit) const override {
+            SeedLookupMetadata* metadata) const override {
         static thread_local std::vector<idx_t> tls_matched_ids;
         tls_matched_ids.clear();
-        if (level1_hit) {
-            *level1_hit = false;
+        if (metadata) {
+            *metadata = SeedLookupMetadata{};
         }
         if (!available(query_id, slot_key)) {
             return tls_matched_ids;
@@ -223,8 +333,11 @@ struct DictionarySeedSource : ISeedSource {
                 tls_matched_ids.assign(
                         slot_ids.begin() + begin,
                         slot_ids.begin() + begin + record_len);
-                if (level1_hit) {
-                    *level1_hit = true;
+                if (metadata) {
+                    metadata->kind = SeedLookupKind::LEGACY_EXACT;
+                    metadata->source_query_key = slot_owners[i];
+                    metadata->source_signature = slot_signatures[i];
+                    metadata->semantic_bucket = slot;
                 }
                 omp_unset_lock(&dictionary_locks[slot]);
                 return tls_matched_ids;
@@ -268,6 +381,12 @@ struct DictionarySeedSource : ISeedSource {
         tls_matched_ids.assign(
                 slot_ids.begin() + begin,
                 slot_ids.begin() + begin + record_len);
+        if (metadata) {
+            metadata->kind = SeedLookupKind::LEGACY_SHARED;
+            metadata->source_query_key = slot_owners[best_i];
+            metadata->source_signature = slot_signatures[best_i];
+            metadata->semantic_bucket = slot;
+        }
 
         omp_unset_lock(&dictionary_locks[slot]);
         return tls_matched_ids;
@@ -381,6 +500,486 @@ struct DictionarySeedSource : ISeedSource {
     }
 };
 
+struct TwoTierSeedSource : ISeedSource {
+    std::shared_ptr<TwoTierSeedStore> store;
+    int probe_count;
+    float retrieval_threshold;
+    float signature_weight;
+    bool semantic_retrieval_enabled;
+    int promotion_hits;
+    uint64_t demotion_window;
+    mutable size_t hot_exact_hits = 0;
+    mutable size_t hot_signature_hits = 0;
+    mutable size_t semantic_shared_hits = 0;
+    mutable size_t semantic_same_query_hits = 0;
+    mutable size_t semantic_cross_query_hits = 0;
+    mutable size_t semantic_anonymous_hits = 0;
+    mutable size_t semantic_threshold_rejects = 0;
+    size_t promotions = 0;
+    size_t demotions = 0;
+    size_t semantic_evictions = 0;
+
+    TwoTierSeedSource(
+            std::shared_ptr<TwoTierSeedStore> store,
+            int probe_count,
+            float retrieval_threshold,
+            float signature_weight,
+            int hint_semantic_enabled,
+            int promotion_hits,
+            int demotion_window)
+            : store(std::move(store)),
+              probe_count(std::max(1, probe_count)),
+              retrieval_threshold(
+                      std::max(0.0f, std::min(1.0f, retrieval_threshold))),
+              signature_weight(
+                      std::max(0.0f, std::min(1.0f, signature_weight))),
+              semantic_retrieval_enabled(hint_semantic_enabled != 0),
+              promotion_hits(std::max(1, promotion_hits)),
+              demotion_window(static_cast<uint64_t>(std::max(1, demotion_window))) {}
+
+    bool available(idx_t query_id, idx_t slot_key) const override {
+        (void)query_id;
+        (void)slot_key;
+        return store && store->semantic_slots > 0 && store->semantic_capacity > 0;
+    }
+
+    static float keep_score(
+            const StoredSeedRecord& seed,
+            uint64_t now,
+            uint64_t age_window) {
+        const float reuse = static_cast<float>(seed.successful_reuses);
+        const uint64_t last_active_tick = std::max(
+                seed.last_refresh_tick, seed.last_success_tick);
+        const uint64_t age = now > last_active_tick
+                ? now - last_active_tick
+                : 0;
+        const float normalized_age = std::min(
+                1.0f,
+                static_cast<float>(age) /
+                        static_cast<float>(std::max<uint64_t>(1, age_window)));
+        constexpr float xi = 0.75f;
+        return xi * reuse - (1.0f - xi) * normalized_age;
+    }
+
+    const std::vector<idx_t>& get(
+            idx_t query_id,
+            idx_t slot_key,
+            const float* query,
+            idx_t dim,
+            SeedLookupMetadata* metadata) const override {
+        (void)slot_key;
+        static thread_local std::vector<idx_t> tls_matched_ids;
+        tls_matched_ids.clear();
+        if (metadata) {
+            *metadata = SeedLookupMetadata{};
+        }
+        if (!available(query_id, slot_key) || !query || dim <= 0) {
+            return tls_matched_ids;
+        }
+
+        const uint64_t query_signature = semantic_retrieval_enabled
+                ? compute_semantic_signature(query, dim)
+                : 0;
+        omp_set_lock(&store->lock);
+
+        if (query_id >= 0) {
+            const auto exact_it = store->hot_exact.find(query_id);
+            if (exact_it != store->hot_exact.end() &&
+                exact_it->second < store->hot.size()) {
+                const StoredSeedRecord& seed = store->hot[exact_it->second];
+                tls_matched_ids = seed.result_ids;
+                if (metadata) {
+                    metadata->kind = SeedLookupKind::HOT_EXACT;
+                    metadata->record_id = seed.record_id;
+                    metadata->source_query_key = seed.query_key;
+                    metadata->source_signature = seed.signature;
+                }
+                hot_exact_hits += 1;
+                omp_unset_lock(&store->lock);
+                return tls_matched_ids;
+            }
+        }
+
+        if (!semantic_retrieval_enabled) {
+            omp_unset_lock(&store->lock);
+            return tls_matched_ids;
+        }
+
+        if (query_id < 0 && !store->hot.empty()) {
+            uint32_t max_reuse = 1;
+            for (const auto& seed : store->hot) {
+                max_reuse = std::max(max_reuse, seed.successful_reuses);
+            }
+            float best_score = -std::numeric_limits<float>::infinity();
+            const StoredSeedRecord* best_seed = nullptr;
+            for (const auto& seed : store->hot) {
+                const float sim = signature_similarity(query_signature, seed.signature);
+                const float reuse = static_cast<float>(seed.successful_reuses) /
+                        static_cast<float>(max_reuse);
+                const float score = signature_weight * sim +
+                        (1.0f - signature_weight) * reuse;
+                if (score > best_score) {
+                    best_score = score;
+                    best_seed = &seed;
+                }
+            }
+            if (best_seed && best_score >= retrieval_threshold) {
+                tls_matched_ids = best_seed->result_ids;
+                if (metadata) {
+                    metadata->kind = SeedLookupKind::HOT_SIGNATURE;
+                    metadata->record_id = best_seed->record_id;
+                    metadata->source_query_key = best_seed->query_key;
+                    metadata->source_signature = best_seed->signature;
+                }
+                hot_signature_hits += 1;
+                omp_unset_lock(&store->lock);
+                return tls_matched_ids;
+            }
+        }
+
+        const std::vector<size_t> probes = semantic_probe_slots(
+                query_signature,
+                store->semantic_slots,
+                static_cast<size_t>(probe_count));
+        uint32_t max_reuse = 1;
+        for (size_t bucket_id : probes) {
+            for (const auto& seed : store->semantic[bucket_id]) {
+                max_reuse = std::max(max_reuse, seed.successful_reuses);
+            }
+        }
+        float best_score = -std::numeric_limits<float>::infinity();
+        const StoredSeedRecord* best_seed = nullptr;
+        size_t best_bucket = 0;
+        for (size_t bucket_id : probes) {
+            for (const auto& seed : store->semantic[bucket_id]) {
+                const float sim = signature_similarity(query_signature, seed.signature);
+                const float reuse = static_cast<float>(seed.successful_reuses) /
+                        static_cast<float>(max_reuse);
+                const float score = signature_weight * sim +
+                        (1.0f - signature_weight) * reuse;
+                if (score > best_score) {
+                    best_score = score;
+                    best_seed = &seed;
+                    best_bucket = bucket_id;
+                }
+            }
+        }
+        if (best_seed && best_score >= retrieval_threshold) {
+            tls_matched_ids = best_seed->result_ids;
+            if (metadata) {
+                metadata->kind = SeedLookupKind::SEMANTIC_SHARED;
+                metadata->record_id = best_seed->record_id;
+                metadata->source_query_key = best_seed->query_key;
+                metadata->source_signature = best_seed->signature;
+                metadata->semantic_bucket = best_bucket;
+                metadata->same_query_match =
+                        query_id >= 0 && best_seed->query_key == query_id;
+            }
+            semantic_shared_hits += 1;
+            if (query_id < 0) {
+                semantic_anonymous_hits += 1;
+            } else if (best_seed->query_key == query_id) {
+                semantic_same_query_hits += 1;
+            } else {
+                semantic_cross_query_hits += 1;
+            }
+        } else if (best_seed) {
+            semantic_threshold_rejects += 1;
+        }
+
+        omp_unset_lock(&store->lock);
+        return tls_matched_ids;
+    }
+
+    void insert_semantic_locked(StoredSeedRecord seed) {
+        if (store->semantic_slots == 0 || store->semantic_capacity == 0) {
+            return;
+        }
+        const size_t bucket_id = semantic_slot_from_signature(
+                seed.signature, store->semantic_slots);
+        auto& bucket = store->semantic[bucket_id];
+        if (seed.query_key >= 0) {
+            for (auto& existing : bucket) {
+                if (existing.query_key == seed.query_key) {
+                    existing = std::move(seed);
+                    return;
+                }
+            }
+        }
+        if (bucket.size() < store->semantic_capacity) {
+            bucket.push_back(std::move(seed));
+            return;
+        }
+
+        size_t victim = 0;
+        float victim_score = std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i < bucket.size(); ++i) {
+            const float score = keep_score(bucket[i], store->clock, demotion_window);
+            if (score < victim_score) {
+                victim_score = score;
+                victim = i;
+            }
+        }
+        const float incoming_score = keep_score(seed, store->clock, demotion_window);
+        const bool victim_stale = store->clock >
+                bucket[victim].last_refresh_tick + demotion_window;
+        if (victim_stale || incoming_score >= victim_score) {
+            bucket[victim] = std::move(seed);
+            semantic_evictions += 1;
+        }
+    }
+
+    void insert_hot_locked(StoredSeedRecord seed) {
+        if (store->hot_capacity == 0) {
+            insert_semantic_locked(std::move(seed));
+            return;
+        }
+
+        if (seed.query_key >= 0) {
+            const auto exact_it = store->hot_exact.find(seed.query_key);
+            if (exact_it != store->hot_exact.end() &&
+                exact_it->second < store->hot.size()) {
+                store->hot[exact_it->second] = std::move(seed);
+                return;
+            }
+        }
+
+        if (store->hot.size() >= store->hot_capacity) {
+            size_t victim = 0;
+            float victim_score = std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < store->hot.size(); ++i) {
+                const float score = keep_score(
+                        store->hot[i], store->clock, demotion_window);
+                if (score < victim_score) {
+                    victim_score = score;
+                    victim = i;
+                }
+            }
+            StoredSeedRecord demoted = std::move(store->hot[victim]);
+            store->hot.erase(store->hot.begin() + victim);
+            insert_semantic_locked(std::move(demoted));
+            demotions += 1;
+            store->rebuild_hot_exact();
+        }
+
+        store->hot.push_back(std::move(seed));
+        const size_t inserted = store->hot.size() - 1;
+        if (store->hot[inserted].query_key >= 0) {
+            store->hot_exact[store->hot[inserted].query_key] = inserted;
+        }
+    }
+
+    bool promote_locked(size_t bucket_id, uint64_t record_id) {
+        if (store->hot_capacity == 0 || bucket_id >= store->semantic.size()) {
+            return false;
+        }
+        auto& bucket = store->semantic[bucket_id];
+        auto it = std::find_if(
+                bucket.begin(), bucket.end(),
+                [record_id](const StoredSeedRecord& seed) {
+                    return seed.record_id == record_id;
+                });
+        if (it == bucket.end() ||
+            it->successful_reuses < static_cast<uint32_t>(promotion_hits)) {
+            return false;
+        }
+
+        if (store->hot.size() >= store->hot_capacity) {
+            float victim_score = std::numeric_limits<float>::infinity();
+            for (const auto& hot_seed : store->hot) {
+                victim_score = std::min(
+                        victim_score,
+                        keep_score(hot_seed, store->clock, demotion_window));
+            }
+            const float candidate_score =
+                    keep_score(*it, store->clock, demotion_window);
+            // Require one additional successful reuse worth of hysteresis.
+            // Equal-frequency fixed queries should not continuously swap tiers.
+            constexpr float promotion_margin = 0.75f;
+            if (candidate_score <= victim_score + promotion_margin) {
+                return false;
+            }
+        }
+
+        StoredSeedRecord promoted = std::move(*it);
+        bucket.erase(it);
+        if (promoted.query_key >= 0 &&
+            store->hot_exact.find(promoted.query_key) != store->hot_exact.end()) {
+            const size_t hot_index = store->hot_exact[promoted.query_key];
+            store->hot[hot_index] = std::move(promoted);
+            store->rebuild_hot_exact();
+            promotions += 1;
+            return true;
+        }
+
+        insert_hot_locked(std::move(promoted));
+        promotions += 1;
+        return true;
+    }
+
+    void writeback(const SeedWritebackRecord& record) override {
+        if (!store || record.k <= 0 || !record.idxi || !record.simi ||
+            record.idxi[0] < 0 ||
+            !std::isfinite(static_cast<double>(record.simi[0]))) {
+            return;
+        }
+
+        omp_set_lock(&store->lock);
+        const uint64_t tick = ++store->clock;
+
+        if (record.hint_used && record.selected_seed.record_id != 0) {
+            if (record.selected_seed.kind == SeedLookupKind::HOT_EXACT &&
+                record.selected_seed.source_query_key >= 0) {
+                const auto exact_it = store->hot_exact.find(
+                        record.selected_seed.source_query_key);
+                if (exact_it != store->hot_exact.end() &&
+                    exact_it->second < store->hot.size()) {
+                    auto& seed = store->hot[exact_it->second];
+                    if (seed.record_id == record.selected_seed.record_id) {
+                        seed.successful_reuses += 1;
+                        seed.last_success_tick = tick;
+                    }
+                }
+            } else if (record.selected_seed.kind ==
+                       SeedLookupKind::HOT_SIGNATURE) {
+                for (auto& seed : store->hot) {
+                    if (seed.record_id == record.selected_seed.record_id) {
+                        seed.successful_reuses += 1;
+                        seed.last_success_tick = tick;
+                        break;
+                    }
+                }
+            } else if (record.selected_seed.kind ==
+                               SeedLookupKind::SEMANTIC_SHARED &&
+                       record.selected_seed.semantic_bucket < store->semantic.size()) {
+                auto& bucket = store->semantic[record.selected_seed.semantic_bucket];
+                for (auto& seed : bucket) {
+                    if (seed.record_id == record.selected_seed.record_id) {
+                        seed.successful_reuses += 1;
+                        seed.last_success_tick = tick;
+                        break;
+                    }
+                }
+                promote_locked(
+                        record.selected_seed.semantic_bucket,
+                        record.selected_seed.record_id);
+            }
+        }
+
+        if (record.query_id >= 0) {
+            const auto hot_it = store->hot_exact.find(record.query_id);
+            if (hot_it != store->hot_exact.end() &&
+                hot_it->second < store->hot.size()) {
+                auto& seed = store->hot[hot_it->second];
+                seed.result_ids.assign(record.idxi, record.idxi + record.k);
+                seed.signature = record.owner_signature;
+                seed.last_refresh_tick = tick;
+                omp_unset_lock(&store->lock);
+                return;
+            }
+        }
+
+        if (record.query_id >= 0 && !record.hint_used) {
+            StoredSeedRecord seed;
+            seed.record_id = store->next_record_id++;
+            seed.result_ids.assign(record.idxi, record.idxi + record.k);
+            seed.query_key = record.query_id;
+            seed.signature = record.owner_signature;
+            seed.birth_tick = tick;
+            seed.last_refresh_tick = tick;
+            if (store->hot.size() < store->hot_capacity) {
+                insert_hot_locked(std::move(seed));
+            } else {
+                insert_semantic_locked(std::move(seed));
+            }
+            omp_unset_lock(&store->lock);
+            return;
+        }
+
+        const size_t bucket_id = semantic_slot_from_signature(
+                record.owner_signature, store->semantic_slots);
+        auto& bucket = store->semantic[bucket_id];
+        auto existing = std::find_if(
+                bucket.begin(), bucket.end(),
+                [&record](const StoredSeedRecord& seed) {
+                    return record.query_id >= 0
+                            ? seed.query_key == record.query_id
+                            : seed.query_key < 0 &&
+                                    seed.signature == record.owner_signature;
+                });
+        if (existing != bucket.end()) {
+            existing->result_ids.assign(record.idxi, record.idxi + record.k);
+            existing->signature = record.owner_signature;
+            existing->last_refresh_tick = tick;
+        } else {
+            StoredSeedRecord seed;
+            seed.record_id = store->next_record_id++;
+            seed.result_ids.assign(record.idxi, record.idxi + record.k);
+            seed.query_key = record.query_id;
+            seed.signature = record.owner_signature;
+            seed.birth_tick = tick;
+            seed.last_refresh_tick = tick;
+            insert_semantic_locked(std::move(seed));
+        }
+        omp_unset_lock(&store->lock);
+    }
+
+    void on_batch_end(bool verbose, int64_t i0, int64_t i1) override {
+        omp_set_lock(&store->lock);
+        for (size_t i = store->hot.size(); i > 0; --i) {
+            const size_t index = i - 1;
+            const auto& seed = store->hot[index];
+            const uint64_t last_active_tick = std::max(
+                    seed.last_refresh_tick, seed.last_success_tick);
+            if (store->clock > last_active_tick + demotion_window) {
+                StoredSeedRecord demoted = std::move(store->hot[index]);
+                store->hot.erase(store->hot.begin() + index);
+                insert_semantic_locked(std::move(demoted));
+                demotions += 1;
+            }
+        }
+        store->rebuild_hot_exact();
+        const size_t hot_size = store->hot.size();
+        const size_t semantic_size = store->semantic_size();
+        omp_unset_lock(&store->lock);
+
+        if (verbose) {
+            printf("streamseed_two_storage_config signature_weight=%.3f retrieval_threshold=%.3f probe_count=%d semantic_enabled=%d\n",
+                   signature_weight, retrieval_threshold, probe_count,
+                   semantic_retrieval_enabled ? 1 : 0);
+            printf("streamseed_two_storage_hits hot_exact=%zu hot_signature=%zu semantic=%zu in chunk [%" PRId64 ", %" PRId64 ")\n",
+                   hot_exact_hits, hot_signature_hits, semantic_shared_hits, i0, i1);
+            printf("streamseed_two_storage_semantic signature_reuse=%zu same_query=%zu cross_query=%zu anonymous=%zu threshold_reject=%zu in chunk [%" PRId64 ", %" PRId64 ")\n",
+                   semantic_shared_hits,
+                   semantic_same_query_hits,
+                   semantic_cross_query_hits,
+                   semantic_anonymous_hits,
+                   semantic_threshold_rejects,
+                   i0,
+                   i1);
+            printf("streamseed_two_storage_maintenance promotions=%zu demotions=%zu semantic_evictions=%zu in chunk [%" PRId64 ", %" PRId64 ")\n",
+                   promotions, demotions, semantic_evictions, i0, i1);
+            printf("streamseed_two_storage_size hot=%zu/%zu semantic=%zu/%zu in chunk [%" PRId64 ", %" PRId64 ")\n",
+                   hot_size,
+                   store->hot_capacity,
+                   semantic_size,
+                   store->semantic_slots * store->semantic_capacity,
+                   i0,
+                   i1);
+        }
+        hot_exact_hits = 0;
+        hot_signature_hits = 0;
+        semantic_shared_hits = 0;
+        semantic_same_query_hits = 0;
+        semantic_cross_query_hits = 0;
+        semantic_anonymous_hits = 0;
+        semantic_threshold_rejects = 0;
+        promotions = 0;
+        demotions = 0;
+        semantic_evictions = 0;
+    }
+};
+
 struct NoopSeedSource : ISeedSource {
     mutable std::vector<idx_t> empty;
 
@@ -393,9 +992,9 @@ struct NoopSeedSource : ISeedSource {
             idx_t slot_key,
             const float* query,
             idx_t dim,
-            bool* level1_hit) const override {
-        if (level1_hit) {
-            *level1_hit = false;
+            SeedLookupMetadata* metadata) const override {
+        if (metadata) {
+            *metadata = SeedLookupMetadata{};
         }
         return empty;
     }
@@ -411,12 +1010,14 @@ struct StreamSeedCoreStrategy : IHintStrategy {
                         int hint_max_candidates,
                         float hint_gate,
                         float hint_qual_gate,
-                        float hint_cons_gate)
+                        float hint_cons_gate,
+                        int hint_boundary_gap_profile)
             : hint_hops(hint_hops),
               hint_max_candidates(hint_max_candidates),
                             hint_gate(hint_gate),
                             hint_qual_gate(hint_qual_gate),
-                            hint_cons_gate(hint_cons_gate) {}
+                            hint_cons_gate(hint_cons_gate),
+                            hint_boundary_gap_profile(hint_boundary_gap_profile != 0) {}
 
     HintSearchResult apply(const HintSearchContext& ctx) const override {
         HintSearchResult result;
@@ -450,8 +1051,10 @@ struct StreamSeedCoreStrategy : IHintStrategy {
         if (!frontier.empty()) {
             std::vector<storage_idx_t> next_frontier;
             int effective_hops = std::max(0, hint_hops);
-            if (!ctx.level1_hit) {
-                // Secondary path uses one extra hop for broader candidate recovery.
+            if (!ctx.high_confidence_seed && !ctx.same_query_seed) {
+                // Cross-query secondary seeds use one extra hop for broader
+                // candidate recovery. A signature-selected seed from the same
+                // stable query uses the configured hop count directly.
                 effective_hops += 1;
             }
             for (int level = 0; level < effective_hops; ++level) {
@@ -522,27 +1125,49 @@ struct StreamSeedCoreStrategy : IHintStrategy {
             scored.emplace_back(ctx.dis(candidates[j]), candidates[j]);
         }
 
-        const size_t topn = std::min(static_cast<size_t>(ctx.k), scored.size());
+        const size_t requested_topn =
+                ctx.k > 0 ? static_cast<size_t>(ctx.k) : 0;
+        const bool observes_boundary_gap =
+                !ctx.high_confidence_seed &&
+                (hint_qual_gate >= 0.0f || hint_boundary_gap_profile);
+        const size_t boundary_extra =
+                observes_boundary_gap && requested_topn < scored.size() ? 1 : 0;
+        const size_t ranked_count = std::min(
+                scored.size(), requested_topn + boundary_extra);
+        const size_t topn = std::min(requested_topn, scored.size());
         std::partial_sort(
                 scored.begin(),
-                scored.begin() + topn,
+                scored.begin() + ranked_count,
                 scored.end(),
                 [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        if (observes_boundary_gap && requested_topn > 0 &&
+            scored.size() > requested_topn) {
+            const float eps = 1e-6f;
+            const float d_k = scored[requested_topn - 1].first;
+            const float d_k_plus_1 = scored[requested_topn].first;
+            const float raw_gap = d_k_plus_1 - d_k;
+            const float normalized_gap = raw_gap / (std::fabs(d_k) + eps);
+            if (std::isfinite(static_cast<double>(raw_gap)) &&
+                std::isfinite(static_cast<double>(normalized_gap))) {
+                result.boundary_gap_available = true;
+                result.boundary_raw_gap = raw_gap;
+                result.boundary_normalized_gap = normalized_gap;
+            }
+        }
 
         if (topn > 0 && hint_gate >= 0.0f && scored[0].first > hint_gate) {
             return result;
         }
 
-        if (!ctx.level1_hit && hint_qual_gate >= 0.0f) {
-            // Quality validation is only for secondary-selected seeds.
-            const float eps = 1e-6f;
-            float qual = std::numeric_limits<float>::infinity();
-            if (topn >= 2) {
-                const float c1 = scored[0].first;
-                const float c2 = scored[1].first;
-                qual = (c2 - c1) / (std::fabs(c1) + eps);
+        if (!ctx.high_confidence_seed && hint_qual_gate >= 0.0f) {
+            // Boundary-gap validation is only for secondary-selected seeds.
+            // A valid gap requires both the k-th and (k+1)-th candidates.
+            if (!result.boundary_gap_available) {
+                result.rejected_by_qual = true;
+                return result;
             }
-            if (qual < hint_qual_gate) {
+            if (result.boundary_normalized_gap < hint_qual_gate) {
                 result.rejected_by_qual = true;
                 return result;
             }
@@ -592,6 +1217,7 @@ struct StreamSeedCoreStrategy : IHintStrategy {
     float hint_gate;
     float hint_qual_gate;
     float hint_cons_gate;
+    bool hint_boundary_gap_profile;
 };
 
 } // namespace
@@ -619,8 +1245,16 @@ OptimizationConfig resolve_optimization_config(
     config.hint_gate_min_samples = params->hint_gate_min_samples;
     config.hint_table_slots = params->hint_table_slots;
     config.hint_slot_capacity = params->hint_slot_capacity;
+    config.hint_hot_capacity = params->hint_hot_capacity;
+    config.hint_probe_count = params->hint_probe_count;
+    config.hint_retrieval_threshold = params->hint_retrieval_threshold;
+    config.hint_signature_weight = params->hint_signature_weight;
+    config.hint_boundary_gap_profile = params->hint_boundary_gap_profile != 0;
+    config.hint_promotion_hits = params->hint_promotion_hits;
+    config.hint_semantic_enabled = params->hint_semantic_enabled != 0;
+    config.hint_demotion_window = params->hint_demotion_window;
 
-    if (config.streamseed_mode == STREAMSEED_CORE) {
+    if (config.streamseed_enabled()) {
         if (config.hint_hops < 0) {
             config.hint_hops = 0;
         }
@@ -632,6 +1266,22 @@ OptimizationConfig resolve_optimization_config(
         }
         if (config.hint_slot_capacity <= 0) {
             config.hint_slot_capacity = 2;
+        }
+        if (config.hint_hot_capacity <= 0) {
+            config.hint_hot_capacity = 512;
+        }
+        if (config.hint_probe_count <= 0) {
+            config.hint_probe_count = 1;
+        }
+        config.hint_retrieval_threshold = std::max(
+                0.0f, std::min(1.0f, config.hint_retrieval_threshold));
+        config.hint_signature_weight = std::max(
+                0.0f, std::min(1.0f, config.hint_signature_weight));
+        if (config.hint_promotion_hits <= 0) {
+            config.hint_promotion_hits = 3;
+        }
+        if (config.hint_demotion_window <= 0) {
+            config.hint_demotion_window = 20000;
         }
         if (config.hint_level1_only < 0) {
             config.hint_level1_only = 0;
@@ -665,7 +1315,8 @@ std::unique_ptr<IHintStrategy> create_streamseed_strategy(
             config.hint_max_candidates,
             config.hint_gate,
             config.hint_qual_gate,
-            config.hint_cons_gate));
+            config.hint_cons_gate,
+            config.hint_boundary_gap_profile));
 }
 
 void clear_dictionary_locks(std::vector<omp_lock_t>& locks) {
@@ -716,6 +1367,33 @@ void prepare_dictionary_if_needed(
            config.ef_search);
 }
 
+void prepare_two_tier_store_if_needed(
+        std::shared_ptr<TwoTierSeedStore>& store,
+        const OptimizationConfig& config,
+        idx_t k) {
+    if (!config.use_two_storage()) {
+        return;
+    }
+    if (!store) {
+        store = std::make_shared<TwoTierSeedStore>();
+    }
+    const size_t hot_capacity =
+            static_cast<size_t>(std::max(1, config.hint_hot_capacity));
+    const size_t semantic_slots =
+            static_cast<size_t>(std::max(1, config.hint_table_slots));
+    const size_t semantic_capacity =
+            static_cast<size_t>(std::max(1, config.hint_slot_capacity));
+    omp_set_lock(&store->lock);
+    if (store->record_k != k || store->hot_capacity != hot_capacity ||
+        store->semantic_slots != semantic_slots ||
+        store->semantic_capacity != semantic_capacity) {
+        store->reset(k, hot_capacity, semantic_slots, semantic_capacity);
+        printf("Prepared two-tier seed store hot=%zu semantic=%zux%zu for ef_search=%d\n",
+               hot_capacity, semantic_slots, semantic_capacity, config.ef_search);
+    }
+    omp_unset_lock(&store->lock);
+}
+
 std::unique_ptr<ISeedSource> create_seed_source(
         const OptimizationConfig& config,
         std::vector<std::vector<idx_t>>& warm_seed_dictionary,
@@ -727,7 +1405,18 @@ std::unique_ptr<ISeedSource> create_seed_source(
     uint64_t& warm_seed_dictionary_clock,
     uint64_t current_batch_round,
     float& warm_seed_adaptive_m_gate,
-    float& warm_seed_adaptive_o_gate) {
+    float& warm_seed_adaptive_o_gate,
+    std::shared_ptr<TwoTierSeedStore>& two_tier_store) {
+    if (config.use_two_storage() && two_tier_store) {
+        return std::unique_ptr<ISeedSource>(new TwoTierSeedSource(
+                two_tier_store,
+                config.hint_probe_count,
+                config.hint_retrieval_threshold,
+                config.hint_signature_weight,
+                config.hint_semantic_enabled,
+                config.hint_promotion_hits,
+                config.hint_demotion_window));
+    }
     if (config.use_dictionary()) {
         return std::unique_ptr<ISeedSource>(
                 new DictionarySeedSource(

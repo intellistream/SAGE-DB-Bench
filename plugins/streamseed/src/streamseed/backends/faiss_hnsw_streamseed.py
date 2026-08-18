@@ -42,6 +42,7 @@ class FaissHnswStreamSeedBackend(StreamSeedBackend):
             mode_map = {
                 "off": 0,
                 "streamseed_core": 1,
+                "streamseed_two_storage": 2,
             }
             config.streamseed_mode = mode_map.get(config.streamseed_mode.lower(), 1)
         self.config = config
@@ -114,6 +115,14 @@ class FaissHnswStreamSeedBackend(StreamSeedBackend):
                 self.config.hint_table_slots,
                 self.config.hint_slot_capacity,
                 query_ids_arg,
+                self.config.hint_hot_capacity,
+                self.config.hint_probe_count,
+                self.config.hint_retrieval_threshold,
+                self.config.hint_promotion_hits,
+                self.config.hint_demotion_window,
+                self.config.hint_signature_weight,
+                self.config.hint_boundary_gap_profile,
+                self.config.hint_semantic_enabled,
             )
         )
 

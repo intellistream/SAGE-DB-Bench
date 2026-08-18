@@ -131,6 +131,82 @@ using streamseed::IHintStrategy;
 using streamseed::ISeedSource;
 using streamseed::OptimizationConfig;
 
+enum class BoundaryGapKind : uint8_t {
+    NONE = 0,
+    SAME_QUERY = 1,
+    CROSS_QUERY = 2,
+};
+
+struct BoundaryGapObservation {
+    BoundaryGapKind kind = BoundaryGapKind::NONE;
+    bool available = false;
+    float raw = 0.0f;
+    float normalized = 0.0f;
+};
+
+float boundary_gap_quantile(const std::vector<float>& sorted, float q) {
+    if (sorted.empty()) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    const double position = static_cast<double>(q) *
+            static_cast<double>(sorted.size() - 1);
+    const size_t lower = static_cast<size_t>(std::floor(position));
+    const size_t upper = static_cast<size_t>(std::ceil(position));
+    const double fraction = position - static_cast<double>(lower);
+    return static_cast<float>(
+            static_cast<double>(sorted[lower]) * (1.0 - fraction) +
+            static_cast<double>(sorted[upper]) * fraction);
+}
+
+void print_boundary_gap_summary(
+        const char* label,
+        const std::vector<BoundaryGapObservation>& observations,
+        BoundaryGapKind filter) {
+    std::vector<float> raw;
+    std::vector<float> normalized;
+    size_t unavailable = 0;
+    for (const auto& observation : observations) {
+        if (observation.kind == BoundaryGapKind::NONE ||
+            (filter != BoundaryGapKind::NONE && observation.kind != filter)) {
+            continue;
+        }
+        if (!observation.available) {
+            unavailable += 1;
+            continue;
+        }
+        raw.push_back(observation.raw);
+        normalized.push_back(observation.normalized);
+    }
+
+    std::sort(raw.begin(), raw.end());
+    std::sort(normalized.begin(), normalized.end());
+    printf("streamseed_boundary_gap_%s count=%zu unavailable=%zu",
+           label, normalized.size(), unavailable);
+    if (normalized.empty()) {
+        printf("\n");
+        return;
+    }
+    printf(" raw_min=%.6g raw_p05=%.6g raw_p50=%.6g raw_p95=%.6g raw_max=%.6g\n",
+           raw.front(),
+           boundary_gap_quantile(raw, 0.05f),
+           boundary_gap_quantile(raw, 0.50f),
+           boundary_gap_quantile(raw, 0.95f),
+           raw.back());
+    printf("streamseed_boundary_gap_%s_normalized min=%.6g p01=%.6g p05=%.6g p10=%.6g p25=%.6g p50=%.6g p75=%.6g p90=%.6g p95=%.6g p99=%.6g max=%.6g\n",
+           label,
+           normalized.front(),
+           boundary_gap_quantile(normalized, 0.01f),
+           boundary_gap_quantile(normalized, 0.05f),
+           boundary_gap_quantile(normalized, 0.10f),
+           boundary_gap_quantile(normalized, 0.25f),
+           boundary_gap_quantile(normalized, 0.50f),
+           boundary_gap_quantile(normalized, 0.75f),
+           boundary_gap_quantile(normalized, 0.90f),
+           boundary_gap_quantile(normalized, 0.95f),
+           boundary_gap_quantile(normalized, 0.99f),
+           normalized.back());
+}
+
 void hnsw_add_vertices(
         IndexHNSWIncremental& index_hnsw,
         size_t n0,
@@ -342,6 +418,11 @@ void IndexHNSWIncremental::search(
             optimization_config,
             k);
 
+        streamseed::prepare_two_tier_store_if_needed(
+            warm_seed_two_tier_store,
+            optimization_config,
+            k);
+
         std::unique_ptr<ISeedSource> seed_source = streamseed::create_seed_source(
             optimization_config,
             warm_seed_dictionary,
@@ -353,7 +434,8 @@ void IndexHNSWIncremental::search(
             warm_seed_dictionary_clock,
             current_batch_round,
             warm_seed_adaptive_m_gate,
-            warm_seed_adaptive_o_gate);
+            warm_seed_adaptive_o_gate,
+            warm_seed_two_tier_store);
 
         std::unique_ptr<IHintStrategy> hint_strategy =
             streamseed::create_streamseed_strategy(optimization_config);
@@ -362,6 +444,10 @@ void IndexHNSWIncremental::search(
     size_t hint_used = 0;
     size_t level1_hits = 0;
     size_t level2_pass = 0;
+    size_t hot_pass = 0;
+    size_t semantic_pass = 0;
+    size_t semantic_same_pass = 0;
+    size_t semantic_cross_pass = 0;
 
     idx_t check_period =
             InterruptCallback::get_period_hint(
@@ -370,6 +456,11 @@ void IndexHNSWIncremental::search(
     for (idx_t i0 = 0; i0 < n; i0 += check_period) {
         idx_t i1 = std::min(i0 + check_period, n);
         std::vector<uint32_t> slot_hits;
+        std::vector<BoundaryGapObservation> boundary_gap_observations;
+        if (optimization_config.use_two_storage() &&
+            optimization_config.hint_boundary_gap_profile != 0) {
+            boundary_gap_observations.resize(static_cast<size_t>(i1 - i0));
+        }
         if (optimization_config.streamseed_enabled() && verbose &&
             optimization_config.hint_table_slots > 0) {
             slot_hits.assign(
@@ -384,7 +475,7 @@ void IndexHNSWIncremental::search(
             std::unique_ptr<DistanceComputer> dis(
                     storage_distance_computer(storage));
 
-#pragma omp for reduction(+ : n1, n2, n3, ndis, nreorder, hint_used, level1_hits, level2_pass) schedule(guided)
+#pragma omp for reduction(+ : n1, n2, n3, ndis, nreorder, hint_used, level1_hits, level2_pass, hot_pass, semantic_pass, semantic_same_pass, semantic_cross_pass) schedule(guided)
             for (idx_t i = i0; i < i1; i++) {
                 idx_t* idxi = labels + i * k;
                 float* simi = distances + i * k;
@@ -400,37 +491,72 @@ void IndexHNSWIncremental::search(
                 }
                 const uint64_t owner_signature =
                     streamseed::compute_semantic_signature(x + i * d, d);
-                const idx_t owner_query_id =
-                    (params && params->query_ids && i < params->query_ids_size)
+                const bool has_stable_query_id =
+                    params && params->query_ids && i < params->query_ids_size;
+                const idx_t owner_query_id = has_stable_query_id
                     ? params->query_ids[i]
-                    : i;
+                    : (optimization_config.use_two_storage() ? -1 : i);
 
                 HintSearchResult hint_result;
+                streamseed::SeedLookupMetadata lookup_metadata;
                 if (hint_strategy && seed_source->available(owner_query_id, slot_key)) {
-                    bool level1_hit = false;
                     const auto& cache_ids =
                         seed_source->get(
                             owner_query_id,
                             slot_key,
                             x + i * d,
                             d,
-                            &level1_hit);
-                    if (level1_hit) {
-                    level1_hits += 1;
+                            &lookup_metadata);
+                    const bool high_confidence_seed =
+                            lookup_metadata.high_confidence();
+                    const bool same_query_seed =
+                            lookup_metadata.kind == streamseed::SeedLookupKind::SEMANTIC_SHARED &&
+                            lookup_metadata.same_query_match;
+                    if (high_confidence_seed) {
+                        level1_hits += 1;
                     }
                     HintSearchContext hint_ctx{
                             k,
                             idxi,
                             simi,
-                            level1_hit,
+                            high_confidence_seed,
+                            same_query_seed,
                             cache_ids,
                             vt,
                             *dis,
                             hnsw};
                     hint_result = hint_strategy->apply(hint_ctx);
+                    if (!boundary_gap_observations.empty() &&
+                        lookup_metadata.kind ==
+                                streamseed::SeedLookupKind::SEMANTIC_SHARED) {
+                        auto& observation = boundary_gap_observations[
+                                static_cast<size_t>(i - i0)];
+                        observation.kind = lookup_metadata.same_query_match
+                                ? BoundaryGapKind::SAME_QUERY
+                                : BoundaryGapKind::CROSS_QUERY;
+                        observation.available = hint_result.boundary_gap_available;
+                        if (observation.available) {
+                            observation.raw = hint_result.boundary_raw_gap;
+                            observation.normalized =
+                                    hint_result.boundary_normalized_gap;
+                        }
+                    }
                     if (hint_result.used) {
                         hint_used += 1;
-                        if (!level1_hit) {
+                        if (lookup_metadata.kind == streamseed::SeedLookupKind::HOT_EXACT ||
+                            lookup_metadata.kind == streamseed::SeedLookupKind::HOT_SIGNATURE) {
+                            hot_pass += 1;
+                        } else if (
+                                lookup_metadata.kind ==
+                                        streamseed::SeedLookupKind::SEMANTIC_SHARED) {
+                            semantic_pass += 1;
+                            if (lookup_metadata.same_query_match) {
+                                semantic_same_pass += 1;
+                            } else {
+                                semantic_cross_pass += 1;
+                            }
+                        }
+                        if (!high_confidence_seed) {
                             level2_pass += 1;
                         }
                     }
@@ -472,7 +598,14 @@ void IndexHNSWIncremental::search(
                 }
 
                 seed_source->writeback(
-                        {owner_query_id, slot_key, owner_signature, used_hint, k, idxi, simi});
+                        {owner_query_id,
+                         slot_key,
+                         owner_signature,
+                         used_hint,
+                         lookup_metadata,
+                         k,
+                         idxi,
+                         simi});
             }
         }
         if (optimization_config.streamseed_enabled() && verbose) {
@@ -491,6 +624,28 @@ void IndexHNSWIncremental::search(
                    static_cast<size_t>(i1 - i0),
                    static_cast<int64_t>(i0),
                    static_cast<int64_t>(i1));
+            if (optimization_config.use_two_storage()) {
+                printf("streamseed_hot_pass %zu/%zu queries in chunk [%" PRId64 ", %" PRId64 ")\n",
+                       hot_pass, static_cast<size_t>(i1 - i0),
+                       static_cast<int64_t>(i0), static_cast<int64_t>(i1));
+                printf("streamseed_semantic_pass %zu/%zu queries in chunk [%" PRId64 ", %" PRId64 ")\n",
+                       semantic_pass, static_cast<size_t>(i1 - i0),
+                       static_cast<int64_t>(i0), static_cast<int64_t>(i1));
+                printf("streamseed_semantic_pass_detail same_query=%zu cross_query=%zu in chunk [%" PRId64 ", %" PRId64 ")\n",
+                       semantic_same_pass, semantic_cross_pass,
+                       static_cast<int64_t>(i0), static_cast<int64_t>(i1));
+                if (!boundary_gap_observations.empty()) {
+                    print_boundary_gap_summary(
+                            "all", boundary_gap_observations,
+                            BoundaryGapKind::NONE);
+                    print_boundary_gap_summary(
+                            "same_query", boundary_gap_observations,
+                            BoundaryGapKind::SAME_QUERY);
+                    print_boundary_gap_summary(
+                            "cross_query", boundary_gap_observations,
+                            BoundaryGapKind::CROSS_QUERY);
+                }
+            }
             if (!slot_hits.empty()) {
                 size_t occupied_slots = 0;
                 size_t collisions = 0;
@@ -555,7 +710,6 @@ void IndexHNSWIncremental::add(idx_t n, const float* x) {
     storage->add(n, x);
 
     ntotal = storage->ntotal;
-
     hnsw_add_vertices(*this, n0, n, x, verbose, hnsw.levels.size() == ntotal);
     printf("adding %ld vectors finishes\n", n);
 }
@@ -575,6 +729,7 @@ void IndexHNSWIncremental::reset() {
     warm_seed_dictionary_round = 0;
     warm_seed_adaptive_m_gate = 0.0f;
     warm_seed_adaptive_o_gate = 0.0f;
+    warm_seed_two_tier_store.reset();
 }
 
 void IndexHNSWIncremental::reconstruct(idx_t key, float* recons) const {

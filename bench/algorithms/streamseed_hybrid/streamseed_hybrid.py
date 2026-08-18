@@ -113,6 +113,14 @@ class StreamSeedHybrid(BaseStreamingANN):
 		self.hint_gate_min_samples = 128
 		self.hint_table_slots = 1024
 		self.hint_slot_capacity = 2
+		self.hint_hot_capacity = 512
+		self.hint_probe_count = 4
+		self.hint_retrieval_threshold = 0.70
+		self.hint_signature_weight = 0.70
+		self.hint_boundary_gap_profile = 0
+		self.hint_semantic_enabled = 1
+		self.hint_promotion_hits = 3
+		self.hint_demotion_window = 20000
 		self.res = None
 
 	def setup(self, dtype, max_pts, ndim):
@@ -215,6 +223,14 @@ class StreamSeedHybrid(BaseStreamingANN):
 			hint_gate_min_samples=self.hint_gate_min_samples,
 			hint_table_slots=self.hint_table_slots,
 			hint_slot_capacity=self.hint_slot_capacity,
+			hint_hot_capacity=self.hint_hot_capacity,
+			hint_probe_count=self.hint_probe_count,
+			hint_retrieval_threshold=self.hint_retrieval_threshold,
+			hint_signature_weight=self.hint_signature_weight,
+			hint_boundary_gap_profile=self.hint_boundary_gap_profile,
+			hint_semantic_enabled=self.hint_semantic_enabled,
+			hint_promotion_hits=self.hint_promotion_hits,
+			hint_demotion_window=self.hint_demotion_window,
 		)
 		self.res, distances = self.plugin.query(x, k, query_ids=query_ids)
 		return self.res, distances
@@ -234,6 +250,14 @@ class StreamSeedHybrid(BaseStreamingANN):
 		self.hint_gate_min_samples = int(query_args.get("hint_gate_min_samples", 128))
 		self.hint_table_slots = int(query_args.get("hint_table_slots", 1024))
 		self.hint_slot_capacity = int(query_args.get("hint_slot_capacity", 2))
+		self.hint_hot_capacity = int(query_args.get("hint_hot_capacity", 512))
+		self.hint_probe_count = int(query_args.get("hint_probe_count", 4))
+		self.hint_retrieval_threshold = float(query_args.get("hint_retrieval_threshold", 0.70))
+		self.hint_signature_weight = float(query_args.get("hint_signature_weight", 0.70))
+		self.hint_boundary_gap_profile = int(query_args.get("hint_boundary_gap_profile", 0))
+		self.hint_semantic_enabled = int(query_args.get("hint_semantic_enabled", 1))
+		self.hint_promotion_hits = int(query_args.get("hint_promotion_hits", 3))
+		self.hint_demotion_window = int(query_args.get("hint_demotion_window", 20000))
 
 	def get_results(self):
 		return self.res

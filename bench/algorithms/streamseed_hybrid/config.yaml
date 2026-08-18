@@ -8,7 +8,7 @@ sift:
         args: |
           [{"efConstruction": 120, "indexkey": "HNSWIncremental32", "verbose": true}]
         query-args: |
-          [{"ef": 120, "streamseed_mode": "streamseed_core", "hint_level1_only": 0, "hint_adaptive_gate_mode": 1, "hint_hops": 1, "hint_max_candidates": 4000, "hint_gate": -1.0, "hint_qual_gate": -1.0, "hint_cons_gate": -1.0, "hint_gate_m_quantile": 0.25, "hint_gate_o_quantile": 0.30, "hint_gate_min_samples": 128, "hint_table_slots": 10000, "hint_slot_capacity": 70}]
+          [{"ef": 120, "streamseed_mode": "streamseed_two_storage", "hint_level1_only": 1, "hint_adaptive_gate_mode": 1, "hint_hops": 1, "hint_max_candidates": 500, "hint_gate": -1.0, "hint_qual_gate": -1.0, "hint_cons_gate": 0.5, "hint_gate_m_quantile": 0.25, "hint_gate_o_quantile": 0.30, "hint_gate_min_samples": 128, "hint_table_slots": 5000, "hint_slot_capacity": 70, "hint_hot_capacity": 7000, "hint_probe_count": 1, "hint_retrieval_threshold": 0.70, "hint_signature_weight": 0.9, "hint_boundary_gap_profile": 0, "hint_semantic_enabled": 1, "hint_promotion_hits": 100000, "hint_demotion_window": 20000}]
 
   streamseed_hybrid_symphonyqg:
     module: benchmark_anns.bench.algorithms.streamseed_hybrid.streamseed_hybrid

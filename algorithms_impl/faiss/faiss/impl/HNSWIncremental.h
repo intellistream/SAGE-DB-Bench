@@ -59,6 +59,14 @@ struct SearchParametersHNSWIncremental : SearchParameters {
     int hint_gate_min_samples = 128;
     int hint_table_slots = 1024;
     int hint_slot_capacity = 2;
+    int hint_hot_capacity = 512;
+    int hint_probe_count = 4;
+    float hint_retrieval_threshold = 0.70f;
+    float hint_signature_weight = 0.70f;
+    int hint_boundary_gap_profile = 0;
+    int hint_semantic_enabled = 1;
+    int hint_promotion_hits = 3;
+    int hint_demotion_window = 20000;
     const idx_t* query_ids = nullptr;
     idx_t query_ids_size = 0;
 
