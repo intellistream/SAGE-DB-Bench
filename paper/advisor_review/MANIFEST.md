@@ -2,7 +2,7 @@
 
 - Canonical carrier: `DataSysResearch/CANDOR-Bench`, base branch `BriskSeed`
 - Source base: `4cde3b3f079ad9b1e4c98b10c2dfa7edf405f07a`
-- Artifact commit: `9d2d6a65a035e8615934ebd00245c32d7f26e702`
+- Artifact commit: `f9661a4f6bddd08c18b51a279c17ff1ac904a82e`
 - Build: `PATH=/home/shuhao/.conda/envs/neuromem/bin:$PATH make pdf`
 - Tectonic exit: `0`; pages: `2`; warnings: none
 - Visual check: both pages rendered at 110 DPI and inspected; no clipping,
@@ -12,11 +12,11 @@
 
 | Artifact | Digest |
 |---|---|
-| `main.tex` | `0289b0ef89dd9a26934652d2ca6ac6c3e9d97ad4eb5902fcefd6be4031425077` |
+| `main.tex` | `ddb2aef8c6b6f04ab44507183b8eb92a46c13aa1044aff1adbd26d53b9669be6` |
 | `references.bib` | `5a62eb8ce80a3534178aa7942cfb322ed65de5e90aacbcd15ef85fbe171c3b9e` |
-| `main.pdf` | `5406ef30f7f9e449964451c572975f42a0dff345361dab2d6b08be722b2ac173` |
-| `main.log` | `935c8f81feda1a2d2637a56b0ce76d3024643d00951b46f6e2a1a50d0dd9d93a` |
-| `BUILD_TRANSCRIPT.txt` | `8608fa9a7e8410d6aac0481e07b7d2f76039db7f7ade2064e10426cc8d7ede5e` |
+| `main.pdf` | `4377bce0988855392623ec4290edcf2b35e66b793fb2a0c147dff83c11cc8ad7` |
+| `main.log` | `ca39b46db1ebe2ded23fc46133b918502a0d6169eeefbe029e35207807605d65` |
+| `BUILD_TRANSCRIPT.txt` | `bd7b5bc03ba154fb5754bbc937e2de2ce031e10006fc0279baf198f982669e30` |
 
 ## Test and evidence boundary
 
@@ -33,4 +33,8 @@
   `Gong20251593` is absent from its bibliography.
 - Existing plots/CSV files remain historical branch evidence. No raw-to-claim
   manifest binds them, so no numerical result is promoted here.
+- Manual semantic audit: `paper/advisor_review/main.tex` is an independent
+  formal advisor entry, not a generated fragment. Its Q1--Q7 list explicitly
+  names problem, importance, cited related-work gap, mechanism, feasibility,
+  matched evaluation, and takeaway; all four bibliography entries are cited.
 - Implementation, environment, experiments, and results remain student-owned.
