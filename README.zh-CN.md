@@ -4,6 +4,15 @@
 
 流式向量索引基准测试框架
 
+## 论文
+
+Mingqi Wang、Junyao Dong、Zhuoyan Wu、Jun Liu、Ruicheng Zhang、Jianjun
+Zhao、Ruipeng Wan、Xinyan Lei、Shuhao Zhang、Bolong Zheng、Haikun Liu、
+Xiaofei Liao、Hai Jin。CANDOR-Bench: Benchmarking In-Memory Continuous ANNS
+under Dynamic Open-World Streams。SIGMOD 2026。
+[论文](https://doi.org/10.1145/3786630) |
+[官方议程](https://2026.sigmod.org/sigmod_program_detailed.shtml)
+
 ## 1. 一键部署
 
 ```bash

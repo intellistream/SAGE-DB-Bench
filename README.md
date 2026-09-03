@@ -8,7 +8,12 @@ Streaming vector index benchmarking framework.
 
 This repository accompanies the following paper:
 
-- Mingqi Wang et al. "CANDOR-Bench: Benchmarking In-Memory Continuous ANNS under Dynamic Open-World Streams." SIGMOD 2026.
+- Mingqi Wang, Junyao Dong, Zhuoyan Wu, Jun Liu, Ruicheng Zhang, Jianjun
+  Zhao, Ruipeng Wan, Xinyan Lei, Shuhao Zhang, Bolong Zheng, Haikun Liu,
+  Xiaofei Liao, and Hai Jin. "CANDOR-Bench: Benchmarking In-Memory Continuous
+  ANNS under Dynamic Open-World Streams." SIGMOD 2026.
+  [Paper](https://doi.org/10.1145/3786630) |
+  [Official program](https://2026.sigmod.org/sigmod_program_detailed.shtml)
 
 ## Table of Contents
 - [Quick Start Guide](#quick-start-guide)

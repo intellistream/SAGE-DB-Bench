@@ -16,13 +16,37 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: recursive
+        fetch-depth: 2
+
+    - name: Classify pull request changes
+      id: changes
+      shell: bash
+      run: |
+        if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          echo "run_build=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if git diff --quiet HEAD^1 HEAD -- \
+          . \
+          ':(exclude)*.md' \
+          ':(exclude)**/*.md' \
+          ':(exclude).github/workflows/*.yml' \
+          ':(exclude).github/workflows/*.yaml'; then
+          echo "run_build=false" >> "$GITHUB_OUTPUT"
+          echo "Documentation/CI-only pull request: full native build is not required."
+        else
+          echo "run_build=true" >> "$GITHUB_OUTPUT"
+        fi
         
     - name: Set up Python 3.10
+      if: steps.changes.outputs.run_build == 'true'
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
     
     - name: Cache pip packages
+      if: steps.changes.outputs.run_build == 'true'
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
@@ -31,6 +55,7 @@ jobs:
           ${{ runner.os }}-pip-
     
     - name: Cache CMake build
+      if: steps.changes.outputs.run_build == 'true'
       uses: actions/cache@v4
       with:
         path: |
@@ -44,6 +69,7 @@ jobs:
           ${{ runner.os }}-cmake-all-
         
     - name: Install system dependencies
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -63,6 +89,7 @@ jobs:
           libspdlog-dev
           
     - name: Install Intel MKL
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         wget -qO - https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | sudo apt-key add -
         echo "deb https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list
@@ -70,48 +97,55 @@ jobs:
         sudo apt-get install -y intel-oneapi-mkl-devel || echo "MKL installation warning (non-fatal)"
           
     - name: Run deployment script
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         chmod +x deploy.sh
         ./deploy.sh --skip-system-deps
       timeout-minutes: 60
       
     - name: Verify PyCANDYAlgo import
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         source sage-db-bench/bin/activate
         echo "=== Test PyCANDYAlgo Import ==="
         python3 -c "import PyCANDYAlgo; print('PyCANDYAlgo:', PyCANDYAlgo.__version__)"
         
     - name: Verify VSAG (pyvsag) import
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         source sage-db-bench/bin/activate
         echo "=== Test pyvsag Import ==="
         python3 -c "import pyvsag; print('pyvsag:', pyvsag.__version__)" || echo "pyvsag: SKIPPED (optional)"
         
     - name: Verify GTI (gti_wrapper) import
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         source sage-db-bench/bin/activate
         echo "=== Test gti_wrapper Import ==="
         python3 -c "import gti_wrapper; print('gti_wrapper: OK')" || echo "gti_wrapper: SKIPPED (optional)"
         
     - name: Verify IP-DiskANN (ipdiskann) import
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         source sage-db-bench/bin/activate
         echo "=== Test ipdiskann Import ==="
         python3 -c "import ipdiskann; print('ipdiskann: OK')" || echo "ipdiskann: SKIPPED (optional)"
         
     - name: Verify PLSH (plsh_python) import
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         source sage-db-bench/bin/activate
         echo "=== Test plsh_python Import ==="
         python3 -c "import plsh_python; print('plsh_python: OK')" || echo "plsh_python: SKIPPED (optional)"
         
     - name: Test core dependencies
+      if: steps.changes.outputs.run_build == 'true'
       run: |
         source sage-db-bench/bin/activate
         python3 -c "import numpy; import torch; print('numpy:', numpy.__version__); print('torch:', torch.__version__)"
 
     - name: Upload build logs on failure
-      if: failure()
+      if: failure() && steps.changes.outputs.run_build == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: build-logs
